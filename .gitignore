@@ -1,0 +1,27 @@
+.DS_Store
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.brf
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local datasets (never commit data; repo is public)
+dataset/
+.venv/
+ext/
+Template/*.pdf
+# the built paper is committed (rebuild before committing; secure patches must not include it: binary)
+!Template/main.pdf
+
+# Qualitative-figure crops (images stay out of the patch; made by code/scripts/make_qual_crops.py)
+Template/fig/qual/

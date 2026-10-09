@@ -1,0 +1,390 @@
+% =====================================================================
+\section{Experiments}
+\label{sec:exp}
+% =====================================================================
+% Numbers: handoff/from_secure/2026-10-05_h3.md and 2026-10-06_h4.md (protocol dpdd4, all 76). h4 re-ran the
+% deblur, bicubic and Real-HAT rows fresh (identical to 4 decimals) and added S3Diff / VOSR 2.0. HAT-L,
+% SwinIR-real, OSEDiff, DATSR rows: h3. Fusion rows still from h2 (tuned on val; the h3 re-evaluation looked
+% untuned). Protocol frozen on 2026-10-04 before any
+% result of the method existed (docs/evaluation.md, decision log).
+
+\subsection{Native-resolution DPDD}
+\label{sec:exp_data}
+DPDD~\cite{abuolaim2020dpdd} contains $500$ static scenes captured with a Canon EOS~5D Mark~IV at f/4
+(defocused input) and f/22 (target), split into $350/74/76$ scenes for training, validation and test.
+The released images are $1680\times1120$; the $6720\times4480$ originals exist only as raw captures. We
+develop every raw capture (libraw, camera white balance, the crop of the official framing, verified
+to $0.07$\,px) and calibrate it to the official rendering of the same capture with a per-capture
+colour polynomial, the converter's unsharp mask and a smooth local-tone field. After $4\times$
+downscaling, our images agree with the official ones to $38.8$\,dB (inputs) and $39.0$\,dB (targets)
+on held-out pixels before registration, and the input--target PSNR of our $\times4$ level ($24.24$\,dB on the $76$ test
+scenes) is close to that of the official images ($23.93$\,dB). Targets are registered to the inputs with a translation; a
+homography over-fits the blur difference between the two apertures (median $6.8$ vs.\ $1.5$\,px
+estimated shift, $12/37$ vs.\ $0/37$ indoor scenes above $10$\,px). Validity masks and a $64$\,px
+border are excluded from all metrics. The left/right dual-pixel views of the input give a disparity
+proportional to the local defocus, which we smooth and use to stratify results into four bins (\cref{fig:bins}): focal
+plane ($b_0$, $|d|<0.4$\,px at $1680$), mild, strong and very strong defocus (edges $1.5$, $3.5$\,px);
+it correlates with the measured loss of sharpness between input and target (median Spearman $0.76$).
+\emph{Ground-truth sharpness.} At f/22 the diffraction cutoff of the camera ($5.36\,\mu$m pixels,
+$\lambda=550$\,nm) is $0.44$\,cycles/px, and diffraction alone reduces the MTF to $0.65$ at the
+Nyquist frequency of a $\times4$ anchor ($0.125$\,cycles/px) and to $0.21$ at $0.3$\,cycles/px. The
+f/4 input is not free of loss either (aberrations, optical low-pass filter, demosaicking), and what
+matters for evaluation is whether the target holds the detail that the camera records in focus, which
+is the detail a method can restore or transfer. A paired measurement on $336$ focal-plane edges of
+$37$ scenes gives a target-to-input MTF ratio of $1.05$, $1.24$, $0.99$ and $0.64$ at $0.1$, $0.2$,
+$0.3$ and $0.4$\,cycles/px (relative Gaussian blur $\sigma\approx0$\,px, $95\%$ CI $0$--$0.31$): the
+target is as sharp as the in-focus input up to $0.3$\,cycles/px and softer only near Nyquist. Plain
+PSNR/SSIM are therefore meaningful at native resolution, but they penalize correct detail above about
+$0.3$\,cycles/px. We report them as the fidelity criterion, together with a sensitivity variant in which
+predictions are blurred with the f/22 diffraction PSF before scoring \todo{numbers; suppl.}, and use
+DISTS and LPIPS to measure restored detail. All results use the $76$ test scenes. Because our $\times4$ level is a re-rendering, results at the
+benchmark resolution are reported both on it and on the original $1680\times1120$ images, on which our
+evaluation reproduces published numbers to within $0.06$\,dB; the two renderings shift individual
+models by $-0.58$ to $+0.16$\,dB and change their order (\cref{tab:gap}).
+
+\begin{figure}[t]
+  \centering
+  \input{fig/bins}
+  \caption{\textbf{Dual-pixel defocus bins} on three test scenes (\texttt{1P0A1002}, \texttt{1P0A2030},
+  \texttt{1P0A1890}); top: input at $\times4$, bottom: bins overlaid (blue: focal plane $b_0$, green $b_1$,
+  yellow $b_2$, red $b_3$). Flat, low-texture regions receive low dual-pixel confidence and can fall in $b_0$ even when
+  defocused (the plain wall at the left of the first scene).}
+  \label{fig:bins}
+\end{figure}
+
+\subsection{Protocol}
+\label{sec:exp_protocol}
+\paragraph{Metrics.} We report standard full-reference metrics computed out of the box on the whole
+native image: PSNR, SSIM~\cite{wang2004ssim}, LPIPS~\cite{zhang2018lpips} and DISTS~\cite{ding2020dists},
+the no-reference MUSIQ~\cite{ke2021musiq} and CLIPIQA~\cite{wang2023clipiqa}, PSNR/SSIM after $4\times$
+downscaling (the standard DPDD resolution, which makes native results comparable with published
+numbers), and runtime per $30$\,MP image. Blur-stratified PSNR and DISTS, the change in the focal-plane
+bin relative to the input, PSNR after a $\pm2$\,px shift search per $512$\,px tile, and text crops serve
+as diagnostics computed identically for every method; they explain differences but are not used to
+rank. Every comparison is paired per image with $95\%$ bootstrap confidence intervals. The protocol
+was fixed before any result of \method was available.
+\paragraph{Inference.} Each method runs as in its paper: methods evaluated on whole $1680\times1120$
+images run whole at $\times4$ and on $1120$\,px tiles at higher resolution; super-resolution models
+use their code's tile size in low-resolution pixels (SwinIR $400$, HAT $512$, OSEDiff and VOSR $128$, \ie
+their $512$\,px training size, S3Diff $192$, its latent tile); overlap is $1/8$ of the tile for all, with
+linear blending, in one shared tiling implementation. Each tile follows the method's official one-step
+path; per-image quantities (S3Diff's degradation estimate) are computed on the whole image, and the
+sampling noise of the generative upsamplers is drawn once per image and shared by overlapping tiles.
+
+\subsection{Baselines}
+\label{sec:exp_baselines}
+\emph{Native inference}: Restormer~\cite{zamir2022restormer} (with and without TLC~\cite{chu2022tlc}),
+LaKDNet-L~\cite{ruan2023lakdnet}, DRBNet~\cite{ruan2022drbnet}, IFAN~\cite{lee2021ifan} and
+Bokehlicious~\cite{seizinger2025bokehlicious}, with released weights. \emph{Low-resolution deblurring
+and upsampling}: an anchor deblurred at $\times4$ (DRBNet or Bokehlicious, the strongest at that resolution;
+other anchors in the supplementary) followed by bicubic, real-world SwinIR~\cite{liang2021swinir}, HAT-L and
+Real-HAT~\cite{chen2023hat}, or the one-step generative upsamplers OSEDiff~\cite{wu2024osediff},
+S3Diff~\cite{zhang2024s3diff} and VOSR~\cite{wu2026vosr}.
+\emph{Training-free fusion} of the anchor and the native input using the dual-pixel blur map: a
+composite that copies the input in focus and the upsampled anchor elsewhere, a multi-scale composite
+that also uses a $\times2$ deblur, a guided filter~\cite{he2013guided}, adding the input's high band,
+and a non-learned version of our exemplar transfer; their parameters are tuned on the validation set.
+\emph{Reference-based super-resolution}: DATSR~\cite{cao2022datsr} with a reference built per tile from the
+observation (the co-located crop and the three most similar in-focus crops). \emph{Retrained at native
+resolution}: Restormer and DRBNet fine-tuned on native training crops. \todo{retrained rows.}
+
+\subsection{Results}
+\label{sec:exp_results}
+
+\begin{table}[t]
+  \centering
+  \small
+  \setlength{\tabcolsep}{2.2pt}
+  \begin{tabular}{@{}lcccccc@{}}
+    \toprule
+    & \multicolumn{4}{c}{deblur at $\times4$} & \multicolumn{2}{c}{deblur at native} \\
+    \cmidrule(lr){2-5}\cmidrule(l){6-7}
+    & \multicolumn{2}{c}{original} & \multicolumn{2}{c}{ours} & \multicolumn{2}{c}{ours} \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(l){6-7}
+    Method & PSNR & $\Delta$ & PSNR & $\Delta$ & PSNR & $\Delta$ \\
+    \midrule
+    Blurry input & 23.93 & -- & 24.24 & -- & 23.06 & -- \\
+    Restormer~\cite{zamir2022restormer} & 26.04 & $+2.11$ & 25.60 & $+1.37$ & 22.99 & $-0.08$ \\
+    \quad + TLC~\cite{chu2022tlc} & -- & -- & -- & -- & 22.99 & $-0.07$ \\
+    LaKDNet-L~\cite{ruan2023lakdnet} & \textbf{26.31} & $+2.38$ & 25.74 & $+1.50$ & 23.00 & $-0.06$ \\
+    DRBNet~\cite{ruan2022drbnet} & 25.79 & $+1.86$ & 25.85 & $+1.62$ & 23.12 & $+0.06$ \\
+    IFAN~\cite{lee2021ifan} & 25.42 & $+1.49$ & 25.58 & $+1.35$ & 23.22 & $+0.15$ \\
+    Bokehlicious~\cite{seizinger2025bokehlicious} & 26.13 & $+2.20$ & \textbf{26.08} & $+1.84$ & \textbf{23.70} & $+0.64$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{The resolution gap.} The same networks gain $1.4$--$2.4$\,dB over the input at the
+  benchmark resolution and almost nothing at native resolution. PSNR in dB, each scored at the resolution it
+  runs at; $\Delta$: paired gain over the input. ``original'': the released $1680\times1120$ images (published
+  numbers reproduced to $0.06$\,dB); ``ours'': our raw-built rendering, the $\times4$ level of the native set.
+  $76$ test scenes. Native $512$\,px instead of $1120$\,px tiles: $\leq 0.06$\,dB difference.
+  \todo{which $\times4$ rendering leads is open; refresh from handoff 4.}}
+  \label{tab:gap}
+\end{table}
+
+\begin{table*}[t]
+  \centering
+  \small
+  \setlength{\tabcolsep}{5pt}
+  % Latest run only: handoff/from_secure/2026-10-06_h4.md (fresh launcher run, all 76, dpdd4; x4 columns of the
+  % native rows from msres, identical to h3). Other baselines (HAT-L, SwinIR-real, OSEDiff, x2, fusion, DATSR)
+  % are earlier runs: Fig. frontier / supplementary.
+  \begin{tabular}{@{}llcccccccc@{}}
+    \toprule
+    & & \multicolumn{6}{c}{native resolution} & \multicolumn{2}{c}{at $\times4$} \\
+    \cmidrule(lr){3-8}\cmidrule(l){9-10}
+    & Method & PSNR\up & SSIM\up & LPIPS\dn & DISTS\dn & MUSIQ\up & CLIPIQA\up & PSNR\up & SSIM\up \\
+    \midrule
+    & Blurry input & 23.06 & 0.596 & 0.370 & 0.260 & 27.3 & 0.321 & 24.24 & 0.711 \\
+    \midrule
+    \multirow{5}{*}{\rotatebox{90}{\scriptsize native}}
+    & Restormer~\cite{zamir2022restormer} & 22.99 & 0.601 & 0.382 & 0.267 & 28.9 & 0.317 & 24.14 & 0.713 \\
+    & LaKDNet-L~\cite{ruan2023lakdnet} & 23.00 & 0.575 & 0.390 & 0.269 & 29.2 & 0.325 & 24.33 & 0.711 \\
+    & DRBNet~\cite{ruan2022drbnet} & 23.12 & 0.586 & 0.376 & 0.266 & 29.1 & 0.329 & 24.35 & 0.714 \\
+    & IFAN~\cite{lee2021ifan} & 23.22 & 0.601 & \textbf{0.348} & \textbf{0.223} & 31.4 & 0.330 & 24.47 & 0.727 \\
+    & Bokehlicious~\cite{seizinger2025bokehlicious} & 23.70 & 0.642 & 0.369 & 0.233 & 31.8 & 0.335 & 24.89 & 0.758 \\
+    \midrule
+    \multirow{4}{*}{\rotatebox{90}{\scriptsize DRBNet $\times4$}}
+    & bicubic & 24.58 & 0.662 & 0.573 & 0.292 & 24.5 & 0.408 & 25.87 & 0.778 \\
+    & Real-HAT~\cite{chen2023hat} & 24.17 & 0.649 & 0.447 & 0.282 & 37.3 & 0.374 & 25.43 & 0.762 \\
+    & S3Diff~\cite{zhang2024s3diff} & 23.64 & 0.602 & 0.425 & 0.254 & 45.5 & 0.489 & 25.43 & 0.760 \\
+    & VOSR~\cite{wu2026vosr} & 24.36 & 0.649 & 0.510 & 0.284 & 40.8 & 0.450 & 25.80 & 0.778 \\
+    \midrule
+    \multirow{4}{*}{\rotatebox{90}{\scriptsize Bokehl.\ $\times4$}}
+    & bicubic & \textbf{24.79} & \textbf{0.667} & 0.546 & 0.289 & 24.7 & 0.424 & \textbf{26.10} & \textbf{0.801} \\
+    & Real-HAT~\cite{chen2023hat} & 24.31 & 0.648 & 0.452 & 0.278 & 40.0 & 0.377 & 25.65 & 0.777 \\
+    & S3Diff~\cite{zhang2024s3diff} & 23.50 & 0.607 & 0.427 & 0.255 & \textbf{48.4} & \textbf{0.524} & 25.31 & 0.775 \\
+    & VOSR~\cite{wu2026vosr} & 24.53 & 0.658 & 0.522 & 0.289 & 40.1 & 0.459 & 25.93 & 0.797 \\
+    \midrule
+    & \method, Bokehlicious anchor & \todo{--} & & & & & & & \\
+    & \method, DRBNet anchor & \todo{--} & & & & & & & \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Native-resolution DPDD ($76$ test scenes, $6720\times4480$).} Anchors are deblurred at
+  $\times4$ on our rendering. ``at $\times4$'': the native result downscaled to the standard DPDD resolution.
+  Further baselines (HAT-L, SwinIR-real, OSEDiff, training-free fusion, DATSR) in \cref{fig:frontier} and the
+  supplementary. \todo{runtime column (warm timing pass); CIs in the supplementary.}}
+  \label{tab:main}
+\end{table*}
+
+\paragraph{The resolution gap (\cref{tab:gap}).} Every network that improves the input by $1.4$--$2.4$\,dB
+at the benchmark resolution is within $0.2$\,dB of the input at native resolution, except
+Bokehlicious, which is trained on multi-megapixel data and gains $0.6$\,dB. Changing the tile size
+from $1120$ to $512$\,px changes the result by at most $0.06$\,dB, and TLC, which corrects global
+statistics for large inputs, changes nothing: the networks fail because the native blur is larger
+than anything they were trained on, not because of tiling.
+
+\begin{figure}[t]
+  \centering
+  \input{fig/frontier}
+  \caption{\textbf{Fidelity vs.\ perceptual quality of existing approaches} at native resolution
+  ($76$ scenes; up and right is better). Every baseline lies on or below one trade-off curve between the most
+  faithful pipeline ($\times4$ Bokehlicious + bicubic, perceptually worse than the input) and fusions
+  that add the input's high band. The shaded region, the fidelity of the best low-resolution
+  pipeline with the texture of the non-learned exemplar transfer, is empty. (B): Bokehlicious anchor,
+  otherwise DRBNet. \todo{\method points.}}
+  \label{fig:frontier}
+\end{figure}
+
+\paragraph{Ceilings of existing approaches (\cref{fig:frontier}).} Four observations hold for both
+anchors and both $\times4$ renderings. (i)~Native inference is bounded by the input: four of five
+networks change PSNR by less than $0.2$\,dB, and the best (Bokehlicious, $+0.64$\,dB) remains
+$1.1$\,dB below the low-resolution pipelines. (ii)~The fidelity ceiling is set by deblurring at
+$\times4$ and upsampling bicubically ($24.79$\,dB with Bokehlicious); no learned or generative
+upsampler improves on bicubic in PSNR or SSIM, with either anchor. (iii)~Perceptual gains are paid
+for in fidelity: the best LPIPS among upsamplers (S3Diff) costs $0.9$\,dB, the best DISTS overall
+(adding the input's high band) costs SSIM, and the text-to-image-based generative upsamplers damage the
+focal plane by $1.0$--$1.1$\,dB with the DRBNet anchor (\cref{tab:bins}) and by up to $1.6$\,dB with
+the Restormer anchor. (iv)~Real texture helps: the non-learned exemplar transfer has a
+better DISTS than any generative upsampler ($0.232$ vs.\ $\geq0.254$), within $0.2$\,dB of bicubic
+upsampling of the same anchor and without damaging the focal plane. The region combining both, which no baseline reaches, is the target of
+\method.
+
+\paragraph{Main comparison (\cref{tab:main}).} Deblurring at $\times4$ and upsampling bicubically
+gains $1.5$--$1.7$\,dB over the input (Bokehlicious anchor: $24.79$\,dB, the best PSNR and SSIM in the
+table), but it is smooth: its LPIPS and DISTS are worse than those of the blurry input. The perceptual
+upsamplers trade fidelity for texture: Real-HAT costs $0.4$--$0.5$\,dB and S3Diff $0.9$--$1.3$\,dB; S3Diff
+has the best LPIPS and no-reference scores of all upsamplers, and the only DISTS ($0.254$) better than
+that of the input. VOSR, a one-step diffusion transformer, is the most conservative generative upsampler:
+within $0.3$\,dB of bicubic, with better LPIPS and no-reference scores. The same ordering holds for both
+anchors. \todo{\method rows and the comparison sentence.}
+
+\subsection{Analysis}
+\label{sec:exp_analysis}
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \setlength{\tabcolsep}{2.5pt}
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+    & \multicolumn{4}{c}{$\Delta$PSNR vs.\ input by defocus bin} & \\
+    \cmidrule(lr){2-5}
+    Method & focal & mild & strong & v.\,strong & DISTS$_{b_3}$\dn \\
+    \midrule
+    Blurry input & 0 & 0 & 0 & 0 & 0.261 \\
+    DRBNet native & $-0.02$ & $+0.10$ & $+0.13$ & $+0.10$ & 0.264 \\
+    $\times4$ + bicubic & $+0.44$ & $+1.32$ & $+2.08$ & $+2.17$ & 0.310 \\
+    $\times4$ + HAT-L & $+0.40$ & $+1.23$ & $+2.01$ & $+2.08$ & 0.297 \\
+    $\times4$ + SwinIR-real & $-0.21$ & $+0.70$ & $+1.46$ & $+1.72$ & 0.303 \\
+    $\times4$ + Real-HAT & $-0.05$ & $+0.92$ & $+1.71$ & $+1.87$ & 0.310 \\
+    $\times4$ + OSEDiff & $\mathbf{-1.11}$ & $+0.26$ & $+1.13$ & $+1.48$ & 0.315 \\
+    $\times4$ + S3Diff & $-0.99$ & $+0.43$ & $+1.26$ & $+1.60$ & \todo{--} \\
+    $\times4$ + VOSR & $+0.08$ & $+1.05$ & $+1.87$ & $+2.06$ & \todo{--} \\
+    DP composite & $+0.14$ & $+1.31$ & $+2.08$ & $+2.17$ & 0.308 \\
+    exemplar (non-learned) & $+0.14$ & $+1.18$ & $+1.92$ & $+1.98$ & 0.266 \\
+    \method & \todo{--} & & & & \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Where methods gain and lose} ($76$ scenes, DRBNet anchor). Mean paired PSNR change
+  over the input in each dual-pixel defocus bin, and DISTS on $512$\,px tiles of the most defocused
+  bin.}
+  \label{tab:bins}
+\end{table}
+
+\paragraph{Where detail is lost and where it is invented (\cref{tab:bins}).} The gains of the
+low-resolution pipelines grow with the amount of defocus, as expected. In the focal plane, where the
+input is already sharp, the text-to-image-based generative upsamplers are \emph{worse than the input}:
+OSEDiff by $1.1$\,dB, with $87\%$ of the scenes affected, and S3Diff by $1.0$\,dB; VOSR leaves the focal
+plane unchanged ($+0.1$\,dB) but also gains less elsewhere than bicubic upsampling. Visually, OSEDiff rewrites caption text into different
+glyphs, alters faces and adds banding in dark regions, while SwinIR-real and Real-HAT add halos and
+contrast (\cref{fig:qual}). The bicubic pipelines slightly \emph{gain} in the focal plane, because
+the f/22 target is less noisy than the f/4 input; PSNR thus rewards smoothing there, which is why we
+report in-focus preservation separately. Conversely, DISTS in the most defocused bin ranks the blurry
+input above every smooth pipeline: perceptual metrics at native resolution reward realistic grain and
+texture, which the smooth pipelines lack and which \method aims to restore from real evidence.
+
+\paragraph{Qualitative comparison (\cref{fig:qual}).} At native resolution the DPDD-trained network leaves the lockers and the poster
+caption as blurry as the input. Deblurring at $\times4$ and upsampling bicubically or with HAT-L recovers edges and legible text,
+but no detail beyond the anchor; the DP composite stays close to this result. The generative upsamplers add detail that is not
+the image's own: OSEDiff rewrites the caption into different glyphs and changes the shape of the locks, S3Diff sharpens the caption with
+altered glyphs and adds grain to the dark scene, SwinIR-real adds contrast and halos, and VOSR2 stays closest to bicubic.
+
+\paragraph{In-focus exemplars carry the missing texture (\cref{fig:texture}).} Within one image the same material often appears both in focus and defocused (\cref{fig:texture}):
+the defocused copy loses its fine texture at native resolution, deblurring at $\times4$ recovers its geometry but not the fine texture, and generative
+upsamplers replace it by texture that is not the material's own (a regular mesh for woven fabric). The in-focus copy is the only real evidence of that texture
+in the image. The non-learned exemplar transfer matches
+each defocused $32$\,px cell to the most similar in-focus cell of the same image at $\times4$ and adds
+its native high band. In a pilot on four scenes, matching halved the PSNR cost and doubled the
+perceptual gain compared with copying random in-focus cells, and an oracle that selects cells using the target shows how much usable
+texture exists in focus. \todo{full-set numbers for random/oracle; relevance-map figure.}
+
+\begin{figure*}[t]
+  \centering
+  \input{fig/texture}
+  \caption{\textbf{The same texture in focus and defocused in one image, and how it evolves with deblurring and
+  upsampling.} (a),(b) printed script on fabric (\texttt{1P0A1046}), (c),(d) woven fabric (\texttt{1P0A1112});
+  (a),(c) in focus, (b),(d) defocused ($512$\,px native windows shown at half size, DRBNet anchor). Input and native
+  inference keep the defocused texture blurred. $\times4$ deblur + bicubic or HAT-L recover the stroke geometry but not the fine
+  weave. OSEDiff smooths the strokes and replaces the in-focus weave by a regular mesh. S3Diff adds weave-like texture to the defocused
+  fabric; VOSR2 adds a regular grid at the right edge. The in-focus rows contain the texture that exemplar transfer
+  copies into the defocused ones. \todo{\method column.}}
+  \label{fig:texture}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \input{fig/qual}
+  \caption{\textbf{Qualitative comparison at native resolution} ($256$\,px native windows; $\times4$ rows use the
+  DRBNet anchor). Native-resolution inference leaves the input as blurry as it is. $\times4$ deblur + bicubic and + HAT-L
+  recover edges and legible text, and so does VOSR2, which stays close to bicubic. SwinIR-real adds contrast and alters
+  glyph shapes; OSEDiff rewrites the poster caption into different glyphs, changes the shape of the locks and adds banding in the dark
+  scene; S3Diff is sharper but also changes glyph shapes and adds grain in the dark scene. Rows: lockers
+  (\texttt{1P0A2030}), poster caption (\texttt{1P0A1890}), dark scene (\texttt{1P0A2202}).
+  \todo{\method column; remaining selected scenes.}}
+  \label{fig:qual}
+\end{figure*}
+
+\subsection{Ablations}
+\label{sec:exp_ablation}
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \setlength{\tabcolsep}{2pt}
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+    & \multicolumn{2}{c}{native} & \multicolumn{2}{c}{$\Delta$PSNR} & $\times4$ \\
+    \cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(l){6-6}
+    Variant & PSNR\up & DISTS\dn & focal & $b_3$ & PSNR\up \\
+    \midrule
+    $\times4$ + bicubic & 24.79 & 0.289 & $+0.44$ & $+2.43$ & 26.10 \\
+    \method (full) & \todo{--} & & & & \\
+    \midrule
+    \multicolumn{6}{@{}l}{\textit{components}} \\
+    \quad w/o anchor lock & \todo{--} & & & & \\
+    \quad w/o native input & \todo{--} & & & & \\
+    \quad w/o blur map & \todo{--} & & & & \\
+    \quad w/o exemplar memory & \todo{--} & & & & \\
+    \midrule
+    \multicolumn{6}{@{}l}{\textit{exemplars}} \\
+    \quad random in-focus exemplars & \todo{--} & & & & \\
+    \quad pixel features, not DINOv2 & \todo{--} & & & & \\
+    \quad oracle exemplars & \todo{--} & & & & \\
+    \midrule
+    \multicolumn{6}{@{}l}{\textit{blur map}} \\
+    \quad CoC radius, not disparity & \todo{--} & & & & \\
+    \quad per-band maps & \todo{--} & & & & \\
+    \quad predicted, not dual-pixel & \todo{--} & & & & \\
+    \midrule
+    \multicolumn{6}{@{}l}{\textit{training and inference}} \\
+    \quad simulated anchors only & \todo{--} & & & & \\
+    \quad real anchors only & \todo{--} & & & & \\
+    \quad tile $256$ / $1024$ & \todo{--} & & & & \\
+    \quad + generative prior & \todo{--} & & & & \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Ablations} ($76$ test scenes, Bokehlicious anchor). $\Delta$PSNR: paired change over the input
+  in the in-focus bin (focal) and the most defocused dual-pixel bin ($b_3$).
+  \todo{fill from the ablation runs.}}
+  \label{tab:ablation}
+\end{table}
+
+\paragraph{Components (\cref{tab:ablation}).} Each ablation removes one source of information or one
+constraint. Without the anchor lock the network is free to alter the anchor's structure, which the
+$\times4$ column exposes. Without the native input the model becomes an anchor-only super-resolver and
+loses both the copy and the deconvolution regime. Without the blur map it cannot tell the regimes apart.
+Without the memory, texture under strong defocus must come from the network's prior alone.
+\todo{results.}
+
+\paragraph{Exemplars.} Random in-focus exemplars test whether retrieval matters, pixel features test
+the choice of DINOv2 for matching across focus, and exemplars chosen with the target's high band bound
+what retrieval could achieve. \todo{results; retrieval recall against the oracle.}
+
+\paragraph{Blur map.} The dual-pixel disparity is used as is; converting it to a circle-of-confusion
+radius or to per-band availability maps tests whether making the physics explicit helps. Replacing it
+by the predicted map measures the cost of not having dual-pixel data. \todo{results.}
+
+\paragraph{Training anchors and tiles.} Training on simulated or on real anchors only isolates the role
+of the anchor mix. Because every tile reads the same global memory, the tile size should matter
+little. \todo{results; whether the generative prior adds anything in regions where the memory
+abstains.}
+
+\begin{table}[t]
+  \centering
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    & \multicolumn{2}{c}{$\times4$ + bicubic} & \multicolumn{2}{c}{\method} \\
+    \cmidrule(lr){2-3}\cmidrule(l){4-5}
+    Anchor & PSNR\up & DISTS\dn & PSNR\up & DISTS\dn \\
+    \midrule
+    Bokehlicious~\cite{seizinger2025bokehlicious} & 24.79 & 0.289 & \todo{--} & \\
+    DRBNet~\cite{ruan2022drbnet} & 24.58 & 0.292 & \todo{--} & \\
+    Restormer~\cite{zamir2022restormer} & 24.48 & 0.319 & \todo{--} & \\
+    LaKDNet-L~\cite{ruan2023lakdnet} & 24.65 & 0.280 & \todo{--} & \\
+    IFAN~\cite{lee2021ifan} & 24.40 & 0.296 & \todo{--} & \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Plug-in.} \method on the anchors of different deblurring methods ($76$ scenes, native
+  resolution). \todo{mark the anchors held out of training.}}
+  \label{tab:plugin}
+\end{table}
+
+\paragraph{Plug-in (\cref{tab:plugin}).} The upsampler sees the deblurring method only through its
+anchor. Applying it unchanged to the anchors of all five methods, including methods held out of
+training, tests whether the gains transfer and whether a better anchor yields a better result.
+\todo{results.}
+
+\paragraph{Human study.} \todo{2AFC preference against the strongest baselines on native-resolution
+crops.}

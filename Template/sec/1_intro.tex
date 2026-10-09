@@ -1,0 +1,111 @@
+% =====================================================================
+\section{Introduction}
+\label{sec:intro}
+% =====================================================================
+
+Defocus blur is an unavoidable consequence of finite depth of field. Wide apertures are used to
+gather light, to freeze motion, or for subject isolation, and whenever the scene spans more depth
+than the lens can keep sharp, regions away from the focal plane are imaged through circles of
+confusion (CoC) whose size grows with their distance from that plane. Single-image defocus
+deblurring aims to recover the all-in-focus image and has progressed rapidly with learned
+models~\cite{abuolaim2020dpdd,son2021kpac,lee2021ifan,ruan2022drbnet,quan2023nrknet,zamir2022restormer,ruan2023lakdnet}.
+
+These models are developed at a resolution far below that of the images they are meant for.
+Interchangeable-lens cameras record $24$--$60$\,MP and smartphone main sensors $50$--$200$\,MP, but
+the standard DPDD benchmark~\cite{abuolaim2020dpdd} is distributed and evaluated at
+$1680\times1120$, although it was captured at the $6720\times4480$ resolution of a Canon EOS~5D
+Mark~IV. Downscaling by a factor $s$ shrinks every CoC by $s$, so the benchmark poses a much easier
+problem than the photograph the user took: blur kernels are small relative to the network's receptive
+field and training crops, and the finest detail, which is the hardest to restore, has already been
+discarded. Methods trained on larger images~\cite{seizinger2025bokehlicious} and ultra-high-definition
+restoration methods (\cref{sec:related}) exist, but to our knowledge no defocus deblurring method has been
+evaluated against ground truth at the native resolution of the sensor, nor is it known how existing ones
+behave there.
+
+\begin{figure}[t]
+  \centering
+  \input{fig/teaser}
+  \caption{\textbf{Defocus deblurring at native resolution ($30$\,MP DPDD).}
+  Running a deblurring network directly at native resolution leaves the image as blurry as the input.
+  Deblurring at $4\times$ lower resolution and upsampling recovers structure but no native detail;
+  generative super-resolution adds detail by invention and rewrites text and in-focus texture.
+  \method copies the observation where it is sharp and transfers texture from in-focus exemplars of
+  the same image where it is not. Crops: $256$\,px native windows of the lockers (\texttt{1P0A2030}) and the poster caption
+  (\texttt{1P0A1890}); generative SR is OSEDiff on the $\times4$ DRBNet anchor. \todo{\method column.}}
+  \label{fig:teaser}
+\end{figure}
+
+We find that the two obvious ways to apply existing methods at native resolution both fail, for
+different reasons (\cref{fig:teaser}, \cref{sec:exp}).
+\emph{Native-resolution inference}, necessarily in tiles, changes almost nothing: on the $76$ DPDD
+test scenes at $30$\,MP, four recent deblurring networks stay within $0.2$\,dB of the blurry input
+and the fifth~\cite{seizinger2025bokehlicious} gains $0.6$\,dB, while the same networks gain
+$1.4$--$2.4$\,dB when the image is downscaled by $4$. Tile size and test-time statistics
+correction~\cite{chu2022tlc} make no difference. The cause is not missing context or tile seams but
+blur of an extent the networks never saw.
+\emph{Deblurring at low resolution and upsampling} recovers the structure ($+1.5$--$1.7$\,dB over the
+input with bicubic upsampling, depending on the deblurring network) but none of the native detail, and the result is visibly soft.
+Restoring that detail with super-resolution is not a remedy: learned upsamplers add nothing over
+bicubic in fidelity, and generative ones~\cite{wang2024stablesr,yu2024supir,wu2024osediff,zhang2024s3diff}
+invent detail, rewriting text into different glyphs and degrading regions that were already in focus
+(in the focal plane, $-1.0$ to $-1.1$\,dB with a DRBNet anchor and up to $-1.6$\,dB with a
+Restormer anchor, for one-step diffusion upsamplers built on text-to-image models). A conservative one-step model~\cite{wu2026vosr} avoids the damage but stays close to bicubic.
+All baselines we evaluate, including training-free fusions of the anchor with the observation and
+reference-based super-resolution, lie on one trade-off curve (\cref{fig:frontier}): the most
+faithful pipeline is perceptually worse than the blurry input, and every perceptual gain is paid
+for in fidelity.
+
+Our key observation is that the native-resolution observation is far from uninformative, and that
+what it lacks locally it often contains elsewhere. Defocus varies across the image: in-focus regions
+retain their full detail, mildly defocused regions retain part of it, and only strongly defocused
+regions have lost it. Photographs are also highly self-similar~\cite{glasner2009single,zontak2011internal}:
+the wall, fabric or foliage that is blurred in the background frequently appears sharp nearer the
+focal plane. A deblurred low-resolution image tells us \emph{what} is where; the in-focus parts of
+the native observation tell us \emph{what it looks like} at full resolution. Even a non-learned
+version of this idea, which pastes the high band of the best-matching in-focus patch into defocused
+regions, improves perceptual quality at almost no fidelity cost (\cref{sec:exp_analysis}).
+
+We build on this observation with \method, a blur-guided upsampler that lifts any low-resolution
+deblurring method to native resolution. It takes the native blurry image, the low-resolution
+deblurred \emph{anchor}, and a \emph{blur map}, and works patch-wise. Three ideas shape the output.
+(i)~An \emph{anchor lock}: the network only adds content above the anchor's frequency band, so the
+result downscales exactly to the anchor and can never be less faithful than it at the benchmark
+resolution, unlike generative upsamplers. (ii)~\emph{The observation is used wherever it still holds
+detail}: guided by the blur map, the network reproduces it in focus and recovers the attenuated high
+frequencies under mild defocus, a regime that neither native deblurring nor low-resolution pipelines
+exploit. (iii)~An \emph{in-focus exemplar memory}, built once per image from sharp regions anywhere in
+the photograph, is queried by every patch through self-supervised features of the anchor, in which
+sharp and defocused regions are comparable; relevant exemplars supply native texture where defocus has
+erased it, and a learned ``no match'' option lets the model abstain. Because the memory is global, each
+patch draws on the whole image, and patch-wise inference is no longer limited by its tile. Because the
+upsampler depends on the low-resolution stage only through the anchor and the blur map, any existing
+deblurring method can be plugged in without retraining; the blur map can be taken from dual-pixel data
+when available or predicted from the anchor and the input otherwise.
+
+Evaluating at native resolution raises its own difficulties. The full-resolution DPDD data exist only
+as raw captures, so we develop them and calibrate each capture to the official rendering
+($39$\,dB agreement at the benchmark resolution), register the f/22 targets to the f/4 inputs with a
+translation-only model (a homography over-fits the blur difference), and stratify all results by the
+local amount of defocus measured from the dual-pixel views. Headline metrics are standard and fixed
+before any result of our method was available; blur-stratified, in-focus-preservation and
+hallucination analyses explain the differences between methods.
+
+In summary, our contributions are:
+\begin{itemize}
+  \item An analysis of defocus deblurring at native sensor resolution, showing on $30$\,MP data that
+        native inference is close to the identity and that low-resolution deblurring followed by
+        (generative) super-resolution either loses or invents detail, and why.
+  \item The observation that at native resolution the source of the missing detail depends on the local
+        defocus (the observation itself in focus and under mild defocus, in-focus regions elsewhere in
+        the same image under strong defocus), and that the two can be matched across focus in a
+        deblurred low-resolution anchor. Its components (back-projection, feature modulation, patch
+        retrieval) are known; we combine them into \method, an anchor-locked, blur-guided upsampler with
+        a global in-focus exemplar memory that lifts any low-resolution method to native resolution.
+        \todo{headline numbers: +X dB / DISTS / human preference over the strongest baseline; N
+        methods lifted, incl.\ held-out ones; no change in focal-plane regions.}
+  \item A native-resolution DPDD benchmark rebuilt from raw ($76$ test, $74$ validation, $350$
+        training scenes) with registration, dual-pixel blur stratification and a fixed protocol, and
+        an evaluation of $5$ deblurring networks, $7$ upsamplers (three one-step diffusion models),
+        $5$ training-free fusions and reference-based super-resolution on it, which establishes the
+        fidelity and perceptual ceilings of existing approaches.
+\end{itemize}

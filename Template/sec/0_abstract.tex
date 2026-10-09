@@ -1,0 +1,23 @@
+\begin{abstract}
+Single-image defocus deblurring is developed and evaluated at about $2$\,MP, while cameras capture
+$24$--$200$\,MP. We study the problem at the native resolution of the sensor and find that the two
+obvious ways to bridge the gap both fail. Applying a state-of-the-art deblurring network directly to
+$30$\,MP images changes almost nothing, because the circles of confusion grow with resolution beyond
+anything seen in training. Deblurring a $4\times$ downscaled image and upsampling the result
+recovers structure but loses native detail: with bicubic upsampling it is the most faithful pipeline
+we evaluate, yet perceptually worse than the blurry input. Generative super-resolution brings detail
+back by inventing it, costing up to $1.3$\,dB against bicubic upsampling of the same result and damaging regions that were already sharp. Across
+$5$ deblurring networks, $7$ upsamplers including three one-step diffusion models, training-free
+fusions and reference-based super-resolution, no baseline improves on bicubic upsampling of the same
+low-resolution result perceptually without losing fidelity. We observe that the missing detail is often
+present elsewhere in the same photograph: defocus is spatially varying, so the in-focus regions of
+the native observation contain real texture of the very materials that are blurred elsewhere.
+We propose \method, a blur-guided upsampler that lifts any low-resolution deblurring method to native
+resolution. It keeps the structure of the low-resolution result exactly by construction and adds only
+native detail: taken from the observation where it is sharp or mildly defocused, and, where defocus
+has erased it, transferred from relevant in-focus exemplars retrieved anywhere in the image through a
+global memory, so that the patch-wise inference is not limited by its tile. To evaluate at native resolution, we rebuild the DPDD benchmark at
+$6720\times4480$ from the raw captures and define a protocol with standard metrics, registration and
+blur-stratified diagnostics. \todo{Results sentence: \method improves N methods by X while not
+altering in-focus regions.}
+\end{abstract}
