@@ -1,5 +1,11 @@
 # Method plan — reference-guided native upsampler (revised 2026-10-07)
 
+**Paused 2026-10-13.** This network is a placeholder. Working order is `plan/gap.md`:
+crystallize the gap in current methods, then survey findings, then design a method.
+Do not train or extend the architecture below until `plan/gap.md` §5 is satisfied.
+
+
+
 Replaces the 2026-10-06 plan (in git history). Decided with the user on 2026-10-07 after handoff 5
 (`handoff/from_secure/2026-10-07_h5.md`): training on the 350 DPDD-native pairs did not overfit (targets misaligned by
 1–2 px, so L1 learns the mean; too few scenes), and retrieval quality could not be measured (no ground truth for which
