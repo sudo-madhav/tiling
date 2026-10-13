@@ -138,14 +138,57 @@ The tree must be able to answer, in four sentences:
 - Which important failure is still open after §3?
 - What is the current hotspot, and which of our faces does it not address?
 
-Papers already known to belong in the tree, as inputs to that extraction, not as methods to adopt:
-DPDD and the DPDD-trained deblurrers; Bokehlicious and RealDefocus (arXiv 2607.21078, scored at
-2000×1500); the upsamplers already in our tables; DATSR; ReFIR; ImageCritic (CVPR 2026);
-RefGC-SR² (arXiv 2606.15158). ImageCritic and RefGC-SR² contribute two candidate insights and
-nothing else: reference super-resolution can make a local detail error worse, and in a DiT the
-low-frequency latent of the degraded input is closer to the target than the reference's, so
-structure and texture have different owners. Both were measured on customized generation with a
-clean external reference, not on defocus.
+The papers already inside this repository are not the survey. They are the measurements.
+The reads below were retrieved outside the repo on 2026-10-13. None of them is a method we adopt.
+Each card still has to say whether the paper scores against ground truth at native sensor
+resolution. Checked once: the defocus papers below report the public DPDD release and RealDOF /
+LFDOF / RTF, not 6720×4480. The UHD papers below restore motion blur, haze, or low light, not defocus.
+
+**Identity — large blur and the wrong resolution**
+
+- Zhai, Zeng, Ma, Zhao, Chen. Learnable Blur Kernel for Single-Image Defocus Deblurring in the Wild.
+  arXiv:2211.14017. Read the CoC paragraph in the introduction and the multi-scale branch
+  (downsample to 1/4 and 1/8 for large radius). They already say a larger circle of confusion
+  needs a larger field. Record the resolution of the PSNR 25.56 number.
+- Zhang, Foo, Rahmani, Liu, Soh. Performing Defocus Deblurring by Modeling its Formation Process.
+  ICCV 2025. Read Figure 1 and Section 3.1–3.2 only. Blur is a large illuminated blob, and they
+  shrink the blob. Record which datasets Table 1 and Table 2 actually use.
+- Ren, Shu, Li, Wu, Li, Zuo. Reblurring-Guided Single Image Defocus Deblurring.
+  arXiv:2409.17792, IJCV 2025. Read Figure 1 and the abstract. DPDD pairs are misaligned, and
+  they train through a reblur so the loss does not sit on the shifted sharp photo. This is our
+  1–2 px registration fact, published as a method. Record whether their test images are native.
+- Feng, Zhou, Ye, Chen, Zhu. Residual Diffusion Deblurring Model for Single Image Defocus
+  Deblurring. AAAI 2025. Read the paragraph that says existing methods fail on extensive,
+  variable defocus, and the sentence that describes the pre-deblur module. Record the test
+  resolution.
+
+**Ceiling — people who refuse to downsample, on a different blur**
+
+- Wu, Wang, Peng, Lu, Zheng. Dropout the High-Rate Downsampling. WACV 2025. D2Net.
+  Read the first page. Their claim is that high-rate downsampling throws away the image, and
+  their deblurring numbers are on UHD-Blur, which is motion blur. The card must say that this
+  claim and our ceiling face disagree, and on which degradation.
+- Zhao, Chen, Xu, Gu, Li, and coauthors. From Zero to Detail. CVPR 2025. ERR.
+  Read Figure 3 and the three-stage paragraph: zero frequency, then low frequency, then a
+  separate high-frequency stage at full resolution. Again UHD restoration, not defocus.
+  The insight to keep is the split of bands, not the network.
+
+**Invention — when a reference is allowed to speak**
+
+- Wang, Wan, Zheng, Li, Hou, Jiang. Trust but Verify. ICLR 2026. arXiv:2602.01864. Ada-RefSR.
+  Read the abstract and the paragraph that defines Adaptive Implicit Correlation Gating.
+  The reference is used when it correlates with the input and suppressed when it does not.
+  That is an abstain, measured on reference super-resolution, not on defocus.
+- Bernasconi, Djelouah, Zhang, Gross, Schroers. ReBaIR: Reference-Based Image Restoration.
+  ICCV Workshops. Read the first two pages and Figure 1. A frozen restorer stays frozen, and
+  a second module writes reference features into its last maps. Their reference is another
+  photograph (a close-up), not a sharp region of the same frame. Say whether the paper ever
+  tries a same-image crop.
+
+ImageCritic (CVPR 2026) and RefGC-SR² (arXiv:2606.15158) stay on the list as the two
+generation papers already read: ReFIR can make a local detail error worse, and low-frequency
+structure follows the degraded input while high-frequency statistics follow the reference.
+Both use a clean external object photo, not a defocused scene.
 
 ## 5. Method work stays blocked until both of these exist
 
