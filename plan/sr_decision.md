@@ -280,6 +280,55 @@ super-resolvers, where there is no recipe. Agreement with people on those
 images is the test that the synthetic label transferred. That human check
 is unchanged from section 4.3.
 
+## 7. Definition of consistency, 2026-10-16
+
+The metric uses the ground-truth 8K image. Consistency is a property of one
+region that crosses several tiles, for example a hat cut into 7 or 8
+interiors. It is not pixel agreement with the ground truth, and it is not
+a judgment that the tiles look similar.
+
+Let R be the set of pixels of that region, taken from the ground truth and
+scaled onto the stitch. Overlap bands are excluded. A tile is kept only
+when its interior still contains enough pixels of R.
+
+Let phi be a translation-invariant texture statistic of those pixels. The
+working choice is the mean in a color space with a separate lightness
+channel, plus the Gram matrix of a fixed filter bank on the high-pass
+image. Phi does not encode where on the hat the piece sits. Crown and brim
+are allowed to differ in shape. They are not allowed to differ in material.
+
+On one image, fit the tile means of phi inside R. The between-tile variance
+is the variance of those means. The within-tile variance is the variance of
+phi on subwindows inside a single tile, averaged over the kept tiles. The
+tile effect is the ratio of between-tile variance to within-tile variance.
+This is the F ratio of a one-way layout whose factor is the tile index.
+
+Compute that ratio on the super-resolved image and on the ground truth,
+using the same R and the same tiles. Consistency is the difference
+
+tile effect of the super-resolved region, minus tile effect of the
+ground-truth region.
+
+Zero means the super-resolver added no tile structure beyond the variation
+the hat already has. Positive means the tile index explains more of phi
+in the result than it does in the ground truth. Negative is possible and
+means the result is flatter across tiles than the real hat.
+
+The null statement is: inside R, the conditional distribution of phi given
+the tile index equals the distribution of phi given only R. The ground
+truth is the estimate of how far a real hat departs from that null. The
+score is the excess departure of the super-resolved hat.
+
+Pixel distance to the ground truth is a different number. A hat that is the
+wrong weave in every tile can score zero here and fail that distance. A hat
+whose pieces are each sharp, and not the same material, can pass a
+perceptual score and fail here.
+
+The overlap band is not in this ratio. A stripe that is the right material
+and shifted by half a period is invisible to phi and visible only in the
+band that was removed. That join is a second statistic, computed only on
+the discarded overlap, and it is not this definition.
+
 ### What is deliberately not decided
 
 - The backbone. Dilated convolution and attention are allowed. They are
