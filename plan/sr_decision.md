@@ -282,6 +282,47 @@ is unchanged from section 4.3.
 
 ## 7. Definition of consistency, 2026-10-16
 
+Superseded by section 8. The claim that fidelity to the original is a different
+quantity was the wrong turn. The metric uses the ground truth.
+
+## 8. Definition, corrected 2026-10-16
+
+Pipeline. Y is the 8K ground truth. Two degradation rounds, each a factor of
+2, produce x at about 2K. x is cut into about 16 tiles of 512 with overlap.
+VOSR at scale 4 is run on each tile. The stitch is Ŷ, back at 8K. The grid
+that matters is those 16 tiles. Overlap is removed before any comparison, so
+each tile contributes only its interior.
+
+A region R, such as a hat, is taken from Y. It may cross 7 or 8 tiles. A
+tile is kept when its interior still contains enough pixels of R.
+
+For each kept tile i, e_i is the reference error between the interior of Ŷ
+and the interior of Y, on pixels in R only. The working choice is masked
+MSE of the high-pass images, plus the L2 distance of their Gram matrices
+from a fixed filter bank. Both terms use Y. Mean color in a lightness-chroma
+space can be a third term. e_i is a vector of those terms.
+
+The region is consistent when two technical conditions hold at once.
+
+1. Level. Every e_i is small. Each piece of the hat in Ŷ matches the same
+   piece in Y.
+2. Dispersion. The variance of e_i across the kept tiles is small. The tiles
+   are not faithful in different ways. One piece matching Y and another
+   departing from Y is an inconsistent hat, even if the average error looks
+   moderate.
+
+The reported score for R is the pair (mean of e_i, variance of e_i). A
+single scalar, if needed, is the mean plus the variance. Both parts use Y.
+There is no score for this region that ignores Y.
+
+This is not the spread of the tiles of Ŷ among themselves. Two tiles can
+agree with each other and both disagree with Y. With Y required, that hat
+is not consistent.
+
+The overlap band is not in e_i. A half-period shift that appears only in
+the removed band is outside this definition.
+
+
 The metric uses the ground-truth 8K image. Consistency is a property of one
 region that crosses several tiles, for example a hat cut into 7 or 8
 interiors. It is not pixel agreement with the ground truth, and it is not
