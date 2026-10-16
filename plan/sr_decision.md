@@ -293,27 +293,40 @@ VOSR at scale 4 is run on each tile. The stitch is Ŷ, back at 8K. Overlap is
 removed. Each tile contributes its interior only. The score is over all 16
 tiles, not over one object.
 
-For each tile i, e_i is a vector of reference errors between that interior
-and the same pixels of Y. Each coordinate is one kind of inconsistency. All
-of them use Y.
+Tiles are not required to look like each other. A sky tile and a foliage
+tile differ in chroma, edge density, and high-pass energy because Y differs
+there. That difference is content. It is not inconsistency.
 
-| Coordinate of e_i | What differs across tiles | Measured as |
+Each tile i is paired with the same pixels of Y. The target for tile i is
+Y_i, not the other tiles. The error is the residual R_i = Ŷ_i - Y_i on the
+interior. Content is already in both images, so it cancels in R_i.
+
+R_i is still larger on a detailed tile than on a flat one when the
+algorithm is equally good, because there is more signal to miss. Divide by
+the scale of that tile in Y: the high-pass energy of Y_i for texture and
+restoration, and the chroma variance of Y_i for color. The normalized
+residual r_i = R_i / scale(Y_i) is comparable across tiles. A flat tile
+with a small absolute error and a detailed tile with a proportionally small
+error get the same r_i.
+
+r_i is a vector of normalized errors:
+
+| Coordinate | Content that may differ | What r_i measures |
 |---|---|---|
-| Restoration | Some tiles are still degraded, some are restored. Unbokeh, deblur, or added detail happened in one tile and not in the next | High-pass energy of Ŷ minus high-pass energy of Y, per tile |
-| Structure | Edges and layout match Y in some tiles and move or vanish in others | Masked MSE of the low-pass, or gradient correlation with Y |
-| Texture | The fine pattern matches Y in some tiles and is a different pattern in others | Distance between Gram matrices of a fixed filter bank on the high-pass |
-| Tone | Brightness or color is shifted in some tiles | Mean difference in a lightness-chroma space |
-| Artifacts | Ringing, false texture, or a residual grid is present in some tiles | High-pass energy in Ŷ that is absent in Y |
+| Restoration | How much fine detail Y has | Missed or extra high-pass energy, divided by high-pass energy of Y_i. Unbokeh in one tile and not the next is a difference in this coordinate |
+| Structure | How many edges Y has | One minus the correlation of gradients with Y_i |
+| Texture | Which pattern Y has | Distance between Gram matrices, divided by the Gram energy of Y_i |
+| Tone | The color of Y | Mean color difference, divided by the chroma spread of Y_i. Zero when Ŷ has the chroma of its own Y_i, whatever that chroma is |
+| Artifacts | None. Y has no false texture | High-pass energy in Ŷ_i that is absent from Y_i, divided by the high-pass energy of Y_i |
 
-The image is consistent when the variance of e_i across the 16 tiles is
-small on every coordinate. The mean of e_i is the overall error. A tile
-that unbokehs and a tile that does not is a large variance on the
-restoration coordinate, even if both tiles are the same object or no
-particular object. Tiles that share one wrong texture still fail the mean
-on texture, because each interior is compared with Y, not with its neighbor.
+Inconsistency is the variance of r_i across the 16 tiles. The mean of r_i
+is the overall normalized error. A tile that restores and a tile that stays
+soft is variance on the restoration coordinate, after each tile has been
+scaled by its own Y. Two tiles of different color are consistent when each
+matches its own Y color.
 
-The reported score is the mean and the variance of e_i, per coordinate.
-There is no score that ignores Y. The overlap band is not inside e_i.
+The overlap band is not inside r_i. There is no score that ignores Y,
+because without Y there is no target for what that tile's content should be.
 
 
 The metric uses the ground-truth 8K image. Consistency is a property of one
