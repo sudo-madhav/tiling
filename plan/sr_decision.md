@@ -195,6 +195,96 @@ Ablations of pipeline 3 come after it wins, not before.
 
 ## 5. Not in this round
 
-No literature review beyond the papers named above. No training. No change
-to the defocus benchmark. The next edit of this file is a disagreement with
-a section number, not a new idea pasted at the bottom.
+No literature review beyond the papers named above. No training run yet.
+No change to the defocus benchmark. Section 6 is the metric formulation
+under discussion. It is not agreed until the open choices at the end of
+that section are closed.
+
+## 6. Metric formulation, 2026-10-16
+
+Raw instinct, restated. Cut a consistent photograph on a grid. Corrupt some
+tiles, of several types, at several strengths. The label is how much
+corruption was applied, and of which kind. Train a model to predict that
+label from the corrupted image alone. The prediction is the consistency
+score. The backbone may be dilated convolutions, attention, or anything
+else. That choice is not the claim. A binary clean-versus-corrupt head is
+the wrong thing to train if the score will also be a loss.
+
+### What is being trained
+
+The input is one image and the grid. The grid is known, because the person
+running a tiled super-resolver chose the tile size. The clean original is
+not an input. Neither is a mask of which tiles were edited. Giving the
+model the mask would leak the label.
+
+The target is a vector, one number per anomaly type, each in \[0, 1\]:
+
+| Type | What is edited inside a tile | The number |
+|---|---|---|
+| Seam | A line on the boundary | Fraction of boundary length that carries a line, times its contrast |
+| Tone | Gain or color, blended so there is no line | Fraction of tiles edited, times the size of the shift |
+| Statistics | Grain or sharpness, no line | Fraction of tiles edited, times the size of the change |
+| Content | A repeated texture replaced by a different texture of the same stuff, blended across the cut | Fraction of eligible tiles swapped |
+
+A scalar severity is a weighted sum of those four. The weights are chosen
+after the model exists, not before, and they are frozen before any
+super-resolver is trained against the score. Until then, report the four
+numbers. A single scalar hides a model that only learned seams.
+
+Cutting the photograph into tiles is not the anomaly. An untouched tiling
+of a real photo is the clean example, and its target vector is zero. The
+anomaly is the edit.
+
+### Why the head is not a binary classifier
+
+A binary label says the image contains an anomaly or it does not. Eight
+swapped tiles and one swapped tile get the same label. A super-resolver
+trained to drive a binary score down gets almost no gradient once the
+classifier is sure the image is inconsistent, and no gradient that prefers
+a milder error over a worse one. Sigmoid outputs saturate.
+
+Binary classification stays in the paper as a check, not as the metric.
+Threshold the content component, or the severity, and measure whether clean
+images and corrupted images separate (AUROC). That answers "can it see
+anything." The trained output, and the loss, are the four continuous
+numbers.
+
+If the score is later added to a super-resolution loss, the term is the
+severity, or the content component alone. It is not a cross-entropy.
+
+### How a training pair is made
+
+1. Take a clean photograph.
+2. Sample a grid size from the sizes real super-resolvers use.
+3. Sample a type, a fraction of tiles, and a strength. Most pairs corrupt
+   one type, so the four targets are not entangled. A minority corrupt
+   two types, so the model sees combinations.
+4. Apply the edit. Record the four numbers from the recipe. That record
+   is the label. It does not require a person.
+5. Hold out whole photographs, hold out at least one grid size, and hold
+   out one way of applying the content swap. A model that only ranks the
+   swaps it was trained to paste has learned the paste.
+
+### What "correct" means
+
+On held-out photographs, for each type separately, the predicted number
+must rise with the applied number. Spearman against the recipe above 0.8
+is the same bar already written in section 4.3. A content edit must not
+be explained by the seam head, and a seam edit must not be explained by
+the content head. An unedited photograph, including one whose real edge
+lies on the grid, must sit near zero on every head.
+
+A learned score that passes only on its own training recipes is not yet
+the metric. The same heads are then run on tiled outputs of existing
+super-resolvers, where there is no recipe. Agreement with people on those
+images is the test that the synthetic label transferred. That human check
+is unchanged from section 4.3.
+
+### What is deliberately not decided
+
+- The backbone. Dilated convolution and attention are allowed. They are
+  chosen by which one ranks the held-out content swaps, not by taste.
+- The four weights in the scalar, until the four heads have been looked at.
+- Whether a non-learned descriptor from section 4.2 already ranks the
+  content column. If it does, this trained model is unnecessary for that
+  column. Build the trained model for the column the descriptor misses.
