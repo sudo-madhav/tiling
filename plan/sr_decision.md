@@ -328,6 +328,30 @@ matches its own Y color.
 The overlap band is not inside r_i. There is no score that ignores Y,
 because without Y there is no target for what that tile's content should be.
 
+## 9. Working directions, 2026-10-16
+
+Do these in order. Do not train a scorer and do not change VOSR.
+
+1. Fix the geometry. One 8K image. Two factor-of-2 Real-ESRGAN degradations
+   to about 2K. Sixteen tiles of 512 on that 2K image, overlap recorded.
+   VOSR scale 4 on each tile. Save the 16 unblended 2048 interiors and the
+   stitch. Confirm VOSR did not cut a 512 tile into a finer grid. If it did,
+   disable that inner grid for this run.
+2. Implement r_i on the interiors. For each tile, residual against the same
+   pixels of Y, then divide by the scale of Y in that tile: high-pass energy
+   for restoration, texture, and artifacts; chroma spread for tone; gradient
+   correlation for structure. Print the 16-by-5 table.
+3. Read that table on two images. One where a region is restored in some
+   tiles and still soft in others. One where tiles differ only because the
+   scene differs, such as sky next to foliage. The first must show variance
+   on the restoration coordinate. The second must not show variance just
+   because chroma or edge density differs in Y.
+4. Only if step 3 holds, repeat on about 20 images and keep the mean and
+   the variance of r_i per image. That pair is the score.
+5. Controlled edits come after the real VOSR tables look right. One edit
+   type at a time on Y, on this same 16-tile grid, to check that the matching
+   coordinate moves and the others stay put.
+
 
 The metric uses the ground-truth 8K image. Consistency is a property of one
 region that crosses several tiles, for example a hat cut into 7 or 8
