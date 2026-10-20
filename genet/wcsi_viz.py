@@ -13,6 +13,12 @@ pair, checks that they add up to the reported terms, and writes to --out:
                    cost, distant-pair divergences against affinity, E_sheaf by coordinate
   seams.png        the worst seams: crop around the seam line and the per-row jump
                    at the line against the control lines
+  far_pairs_consistent.png, far_pairs_inconsistent.png
+                   distant tiles that the LR calls one material (affinity >= --min-affinity):
+                   the pairs whose invented textures agree best and worst (E_cyto's
+                   statistics before affinity weighting). Per pair: where they are, the SR
+                   tiles with the LR inset, both residuals on one colour scale, both radial
+                   spectra with slope fits, and both Gabor energy sets
   tile_<id>.png    one tile through the pipeline: SR / LR, D_s(SR) - LR colour error,
                    residual R and the LR's residual, windowed power spectrum and DCT
                    with the band, radial spectrum with the slope fit, Gabor energies,
@@ -166,7 +172,7 @@ def decompose(sr, lr, scale=None, tile=None, overlap=None, tiles=None, tile_coor
 
     # E_cyto
     sums["E_cyto"] = None
-    cyto_split = np.zeros((P, 3))
+    cyto_split, cyto_div = np.zeros((P, 3)), np.zeros((P, 3))
     if far.any():
         fi = np.flatnonzero(far)
         den = float(w[far].sum()) + p["prior_pairs"]
@@ -177,9 +183,9 @@ def decompose(sr, lr, scale=None, tile=None, overlap=None, tiles=None, tile_coor
             ja2 = jnd_a ** 2 + se_a[x] ** 2 + se_a[y] ** 2
             jg = p["jnd_gram"] * 0.5 * (gnorm[x] + gnorm[y])
             v = np.minimum(vis[x], vis[y])
-            cyto_split[kk] = w[kk, None] * np.stack([v * (fbar[x] - fbar[y]) ** 2 / jf2,
-                                                     v * (alpha[x] - alpha[y]) ** 2 / ja2,
-                                                     np.sum((G[x] - G[y]) ** 2, (1, 2)) / jg ** 2], 1) / den
+            cyto_div[kk] = np.stack([v * (fbar[x] - fbar[y]) ** 2 / jf2, v * (alpha[x] - alpha[y]) ** 2 / ja2,
+                                     np.sum((G[x] - G[y]) ** 2, (1, 2)) / jg ** 2], 1)
+            cyto_split[kk] = w[kk, None] * cyto_div[kk] / den
         pair_part["E_cyto"] = cyto_split.sum(1)
         sums["E_cyto"] = float(pair_part["E_cyto"].sum())
 
@@ -217,7 +223,7 @@ def decompose(sr, lr, scale=None, tile=None, overlap=None, tiles=None, tile_coor
     F_tile = sum(wts[k] * tile_part[k] for k in used) if used else np.zeros(N)
     return dict(det=det, p=p, s=s, rects=rects, ids=ids, pos=pos, I=I, J=J, near=near, far=far, corners=corners,
                 scored=scored, w=w, tile_part=tile_part, pair_part=pair_part, corner_part=corner_part,
-                cyto_split=cyto_split, sheaf_coord=sheaf_coord, sheaf_tile_coord=sheaf_tile_coord, gj_raw=gj_raw,
+                cyto_split=cyto_split, cyto_div=cyto_div, sheaf_coord=sheaf_coord, sheaf_tile_coord=sheaf_tile_coord, gj_raw=gj_raw,
                 sums=sums, F_tile=F_tile, weights=wts, used=used, vis=vis, theta=theta, order=order,
                 d=d, jnd_t=jnd_t, se=se, se0=se0, kappa=kappa, psi=psi, psi0=psi0,
                 sr_rgb=sr_rgb, sr_white=sr_white, lr_rgb=lr_rgb, lr_white=lr_white,
@@ -532,9 +538,9 @@ def _radial(lum, f_lo):
     return fr, pr, band, fit, np.fft.fftshift(P)
 
 
-def fig_tile(D, k, out):
-    plt = _plt()
-    s, f_lo, sigma = D["s"], D["f_lo"], D["sigma"]
+def _tile_data(D, k):
+    """SR canvas (Lab, RGB), LR tile (Lab, RGB), M, and the L* residuals of SR and LR."""
+    s, sigma = D["s"], D["sigma"]
     y0, x0, h, w_ = D["rects"][k]
     if D["canv"] is not None:
         Hc, rgb = D["canv"][k], D["canv_rgb"][k]
@@ -545,7 +551,108 @@ def fig_tile(D, k, out):
     lrgb = _rgb01(D["lr_rgb"][y0:y0 + h, x0:x0 + w_], D["lr_white"])
     M, R = wcsi.rg_split(Hc, s, sigma)
     _, R0 = wcsi.rg_split(Lc, s, sigma)
-    lum, lum0 = np.ascontiguousarray(R[..., 0]), np.ascontiguousarray(R0[..., 0])
+    return Hc, rgb, Lc, lrgb, M, np.ascontiguousarray(R[..., 0]), np.ascontiguousarray(R0[..., 0])
+
+
+def select_far_pairs(D, n, min_affinity=0.5):
+    """Distant pairs the LR calls one material (affinity >= min_affinity, or the top 20% of
+    distant pairs by affinity if fewer than 2n qualify), ranked by their texture divergence
+    (the E_cyto statistics before affinity weighting): the n most consistent and n least."""
+    fk = np.flatnonzero(D["far"])
+    if not len(fk):
+        return [], [], None
+    cand = fk[D["w"][fk] >= min_affinity]
+    if len(cand) < 2 * n:
+        cand = fk[np.argsort(-D["w"][fk])[:max(2 * n, math.ceil(0.2 * len(fk)))]]
+    o = cand[np.argsort(D["cyto_div"][cand].sum(1), kind="stable")]
+    best = o[:n].tolist()
+    worst = [k for k in o[::-1] if k not in set(best)][:n]
+    return best, worst, float(D["w"][cand].min())
+
+
+def fig_far_pairs(D, out, n=3, min_affinity=0.5):
+    """far_pairs_consistent.png / far_pairs_inconsistent.png: same-material distant pairs."""
+    plt = _plt()
+    from matplotlib.patches import Rectangle
+    best, worst, thr = select_far_pairs(D, n, min_affinity)
+    if not best:
+        return []
+    lr, step = _thumb(_rgb01(D["lr_rgb"], D["lr_white"]), 800)
+    written = []
+    for name, sel, label in (("consistent", best, "most consistent"), ("inconsistent", worst, "least consistent")):
+        if not sel:
+            continue
+        fig, ax = plt.subplots(len(sel), 7, figsize=(31, 4.4 * len(sel)), squeeze=False,
+                               gridspec_kw=dict(width_ratios=[1.3, 1, 1, 1, 1, 1.3, 1.3]))
+        for row, q in enumerate(sel):
+            i, j = int(D["I"][q]), int(D["J"][q])
+            di, dj = _tile_data(D, i), _tile_data(D, j)
+            fi = wcsi.tile_features(di[0], D["s"], D["sigma"], D["f_lo"])[1]
+            fj = wcsi.tile_features(dj[0], D["s"], D["sigma"], D["f_lo"])[1]
+            div = D["cyto_div"][q]
+            a = ax[row, 0]
+            a.imshow(lr)
+            cen = []
+            for k, c in ((i, "cyan"), (j, "magenta")):
+                y0, x0, h, w_ = D["rects"][k]
+                a.add_patch(Rectangle((x0 / step, y0 / step), w_ / step, h / step, fill=False, ec=c, lw=2))
+                cen.append(((x0 + w_ / 2) / step, (y0 + h / 2) / step))
+            a.plot(*zip(*cen), color="yellow", lw=1, ls="--")
+            a.set_title(f"affinity w = {D['w'][q]:.2f}\ndivergence: freq {div[0]:.2f} + slope {div[1]:.2f} + "
+                        f"Gabor {div[2]:.2f} = {div.sum():.2f} JND^2", fontsize=9)
+            a.axis("off")
+            lim = max(np.percentile(np.abs(di[5]), 99.5), np.percentile(np.abs(dj[5]), 99.5)) + 1e-6
+            for col, (k, dd, ft, c) in enumerate(((i, di, fi, "cyan"), (j, dj, fj, "magenta"))):
+                a = ax[row, 1 + col]
+                a.imshow(dd[1])
+                ins = a.inset_axes([0.0, 0.0, 0.32, 0.32])
+                ins.imshow(dd[3], interpolation="nearest")
+                ins.set_xticks([])
+                ins.set_yticks([])
+                for sp in ins.spines.values():
+                    sp.set_edgecolor(c)
+                a.set_title(f"SR tile {D['ids'][k]} (inset: LR)", fontsize=9, color="k")
+                a.axis("off")
+                a = ax[row, 3 + col]
+                a.imshow(dd[5], cmap="RdBu_r", vmin=-lim, vmax=lim)
+                a.set_title(f"residual L* of tile {D['ids'][k]}\nvisibility {D['vis'][k]:.2f}, "
+                            f"RMS {dd[5].std():.2f} (shared colour scale)", fontsize=9)
+                a.axis("off")
+            a = ax[row, 5]
+            for k, dd, ft, c in ((i, di, fi, "C0"), (j, dj, fj, "C3")):
+                fr, pr, band, fit, _ = _radial(dd[5], D["f_lo"])
+                a.loglog(fr, pr, ".", ms=3, color=c, alpha=0.5)
+                if fit is not None:
+                    a.loglog(fr[band], np.exp(np.polyval(fit, np.log(fr[band]))), color=c, lw=1.5,
+                             label=f"tile {D['ids'][k]}: slope {ft['alpha']:.2f}, mean freq {ft['fbar']:.3f}")
+            a.axvline(D["f_lo"], color="k", ls="--", lw=0.7)
+            a.set_xlabel("radial frequency (cycles/px); band right of dashed line")
+            a.set_title("radial power spectra of the residuals", fontsize=9)
+            a.legend(fontsize=8)
+            a = ax[row, 6]
+            gi, gj = np.diagonal(fi["gram"]), np.diagonal(fj["gram"])
+            xs = np.arange(len(gi))
+            a.bar(xs - 0.2, gi, 0.4, color="C0", label=f"tile {D['ids'][i]}")
+            a.bar(xs + 0.2, gj, 0.4, color="C3", label=f"tile {D['ids'][j]}")
+            a.set_yscale("log")
+            a.set_xticks(xs, [f"{k_ % 4 * 45}d\nf{k_ // 4}" for k_ in xs], fontsize=7)
+            a.legend(fontsize=8)
+            a.set_title(f"Gabor energies; pair's E_cyto part {D['pair_part']['E_cyto'][q]:.4f}, "
+                        f"E_sheaf part {D['pair_part']['E_sheaf'][q]:.4f}", fontsize=9)
+        fig.suptitle(f"distant pairs of one material in the LR (affinity >= {thr:.2f}): the {len(sel)} {label} "
+                     "in the SR's invented texture", fontsize=13)
+        fig.tight_layout()
+        fig.savefig(out / f"far_pairs_{name}.png", dpi=90)
+        plt.close(fig)
+        written.append(f"far_pairs_{name}")
+    return written
+
+
+def fig_tile(D, k, out):
+    plt = _plt()
+    s, f_lo, sigma = D["s"], D["f_lo"], D["sigma"]
+    y0, x0, h, w_ = D["rects"][k]
+    Hc, rgb, Lc, lrgb, M, lum, lum0 = _tile_data(D, k)
     dE = wcsi.ciede2000(M, Lc)
 
     fig, ax = plt.subplots(3, 4, figsize=(20, 14.5))
@@ -695,6 +802,10 @@ def main(argv=None):
     ap.add_argument("--kappa", default="auto")
     ap.add_argument("--tile-ids", nargs="*", help="tiles to draw in detail (default: the 3 most and 1 least costly)")
     ap.add_argument("--seams", type=int, default=4, help="number of worst seams to draw")
+    ap.add_argument("--far-pairs", type=int, default=3,
+                    help="same-material distant pairs to draw, most and least consistent (default 3 each)")
+    ap.add_argument("--min-affinity", type=float, default=0.5,
+                    help="LR affinity that makes two distant tiles 'one material' (default 0.5)")
     args = ap.parse_args(argv)
     if args.tiles_jsonl and (args.tile is not None or args.overlap is not None):
         ap.error("--tiles-jsonl replaces --tile/--overlap")
@@ -736,9 +847,11 @@ def main(argv=None):
     fig_term_maps(D, out)
     fig_pairs(D, out)
     fig_seams(D, out, args.seams)
+    far = fig_far_pairs(D, out, args.far_pairs, args.min_affinity) if args.far_pairs > 0 else []
     for k in sel:
         fig_tile(D, k, out)
-    print(f"  wrote {out}/: overview, term_maps, pairs, seams, " + ", ".join(f"tile_{D['ids'][k]}" for k in sel)
+    print(f"  wrote {out}/: " + ", ".join(["overview", "term_maps", "pairs", "seams"] + far
+                                          + [f"tile_{D['ids'][k]}" for k in sel])
           + " (.png), tiles.csv, pairs.csv, summary.json")
     return 0
 

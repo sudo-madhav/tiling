@@ -36,6 +36,17 @@ def test_parts_add_up_on_other_layouts():
     _assert_adds_up(wcsi_viz.decompose(sr, lr, tile=16, overlap=4, tiles=canv))
 
 
+def test_far_pair_selection():
+    lr, sr = make_pair(2, 48, 64)
+    D = wcsi_viz.decompose(sr, lr, tile=16, overlap=0)
+    best, worst, thr = wcsi_viz.select_far_pairs(D, 2, min_affinity=0.0)
+    assert len(best) == len(worst) == 2 and not set(best) & set(worst)
+    assert all(D["far"][q] and D["w"][q] >= thr for q in best + worst)
+    div = D["cyto_div"].sum(1)
+    assert max(div[best]) <= min(div[worst])
+    assert div[worst[0]] == pytest.approx(div[D["far"]].max())
+
+
 def test_figures_written(tmp_path):
     pytest.importorskip("matplotlib")
     PIL = pytest.importorskip("PIL.Image")
@@ -46,7 +57,8 @@ def test_figures_written(tmp_path):
     out = tmp_path / "viz"
     assert wcsi_viz.main([str(tmp_path / "sr.png"), str(tmp_path / "lr.png"), "--tile", "16", "--overlap", "2",
                           "--out", str(out), "--tile-ids", "0", "4"]) == 0
-    for name in ("overview", "term_maps", "pairs", "seams", "tile_0", "tile_4"):
+    for name in ("overview", "term_maps", "pairs", "seams", "tile_0", "tile_4",
+                 "far_pairs_consistent", "far_pairs_inconsistent"):
         assert (out / f"{name}.png").stat().st_size > 0
     n = len(wcsi.tile_starts(32, 16, 2)) * len(wcsi.tile_starts(48, 16, 2))
     assert (out / "tiles.csv").read_text().count("\n") == 1 + n
