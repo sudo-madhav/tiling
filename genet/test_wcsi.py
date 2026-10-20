@@ -100,8 +100,8 @@ def test_tile_colour_shift_lowers_score(s):
 def test_details_shapes_and_advice():
     lr, sr = make_pair(4, 32, 48)
     d = wcsi.wcsi_score(sr, lr, tile=16, overlap=2, return_details=True)
-    g = d["grid"]
-    assert len(d["tiles"]) == g["rows"] * g["cols"]
+    g = d["layout"]
+    assert g["source"] == "grid" and len(d["tiles"]) == g["n_tiles"] == g["rows"] * g["cols"]
     t = d["tiles"][0]
     assert len(t["psi"]) == len(t["psi0"]) == len(t["r"]) == len(t["step"]) == 14
     assert isinstance(t["advice"], str) and t["advice"]
@@ -126,7 +126,7 @@ def test_tile_outputs_overlap_comparison():
 def test_single_tile_grid():
     lr, sr = make_pair(2, 24, 24)
     d = wcsi.wcsi_score(sr, lr, tile=64, overlap=0, return_details=True)
-    assert (d["grid"]["rows"], d["grid"]["cols"]) == (1, 1)
+    assert (d["layout"]["rows"], d["layout"]["cols"]) == (1, 1)
     assert d["terms"]["E_RG"] is not None
     assert all(d["terms"][k] is None for k in ("E_GJ", "E_PCP", "E_cyto", "E_sheaf"))
     assert 0 < d["wcsi"] <= 100
@@ -160,6 +160,80 @@ def test_cli(tmp_path, capsys):
                       "--json", str(out), "--advice"]) == 0
     assert "WCSI" in capsys.readouterr().out
     assert json.loads(out.read_text())["scale"] == 4
+
+
+def grid_coords(h0, w0, tile, ov, s=1, ends=False):
+    ys, xs = wcsi.tile_starts(h0, tile, ov), wcsi.tile_starts(w0, tile, ov)
+    if ends:
+        return [dict(x0=s * x, y0=s * y, x1=s * (x + tile), y1=s * (y + tile)) for y in ys for x in xs]
+    return [dict(x=s * x, y=s * y, w=s * tile, h=s * tile, id=f"t{y}_{x}") for y in ys for x in xs]
+
+
+def test_tile_coords_jsonl_equals_grid(tmp_path):
+    s = 2
+    lr, sr = make_pair(s, 32, 44)
+    ref = wcsi.wcsi_score(sr, lr, tile=16, overlap=4, return_details=True)
+    f = tmp_path / "tiles.jsonl"
+    f.write_text("\n".join(json.dumps(t) for t in grid_coords(32, 44, 16, 4)) + "\n")
+    d = wcsi.wcsi_score(sr, lr, tile_coords=f, return_details=True)
+    assert d["wcsi"] == pytest.approx(ref["wcsi"], abs=1e-9)
+    assert d["layout"]["source"] == "coords" and d["layout"]["rows"] == ref["layout"]["rows"]
+    assert d["tiles"][0]["id"] == "t0_0"
+    sr_space = wcsi.wcsi_score(sr, lr, tile_coords=grid_coords(32, 44, 16, 4, s, ends=True), tile_space="sr")
+    assert sr_space == pytest.approx(ref["wcsi"], abs=1e-9)
+
+
+def test_tile_coords_non_grid_layout():
+    lr, sr = make_pair(2, 48, 64)
+    # brick pattern: the second row is offset by half a tile, so the tiles do not form a grid
+    rects = [dict(x=x, y=0, w=16, h=16) for x in (0, 16, 32, 48)] + \
+            [dict(x=x, y=16, w=16, h=16) for x in (8, 24, 40)] + \
+            [dict(x=x, y=32, w=16, h=16) for x in (0, 16, 32, 48)]
+    d = wcsi.wcsi_score(sr, lr, tile_coords=rects, return_details=True)
+    assert d["layout"]["rows"] is None and d["tiles"][0]["row"] is None
+    assert all(d["terms"][k] is not None for k in wcsi.TERMS)
+    assert 0 < d["wcsi"] <= 100
+    I, J, near, far, corners = wcsi._tile_graph([(r["y"], r["x"], r["h"], r["w"]) for r in rects], None)
+    assert near.sum() == 3 + 2 + 3 + 6 + 6 and corners.size == 0
+
+
+def test_tile_coords_cycles_without_grid():
+    # a 2 x 2 block plus one extra tile to the right of different height: not a grid, one corner cycle
+    rects = [(0, 0, 16, 16), (0, 16, 16, 16), (16, 0, 16, 16), (16, 16, 16, 16), (0, 32, 32, 16)]
+    assert wcsi._grid_positions(rects) is None
+    _, _, near, far, corners = wcsi._tile_graph(rects, None)
+    assert corners.shape == (1, 4) and set(corners[0]) == {0, 1, 2, 3}
+
+
+def test_tile_coords_paths_and_errors(tmp_path, capsys):
+    PIL = pytest.importorskip("PIL.Image")
+    s, tile, ov = 2, 16, 4
+    lr, sr = make_pair(s, 32, 44)
+    u8 = lambda a: (np.clip(a, 0, 1) * 255 + 0.5).astype(np.uint8)
+    (tmp_path / "out").mkdir()
+    lines = []
+    for k, t in enumerate(grid_coords(32, 44, tile, ov)):
+        PIL.fromarray(u8(sr[s * t["y"]:s * (t["y"] + tile), s * t["x"]:s * (t["x"] + tile)])).save(
+            tmp_path / "out" / f"{k}.png")
+        lines.append(json.dumps({**t, "path": f"out/{k}.png"}))
+    f = tmp_path / "tiles.jsonl"
+    f.write_text("\n".join(lines))
+    d = wcsi.wcsi_score(u8(sr), u8(lr), tile_coords=f, return_details=True)
+    assert d["terms"]["E_GJ"] == pytest.approx(0, abs=1e-9)
+    assert any("overlap comparison" in n for n in d["notes"])
+    with pytest.raises(ValueError):
+        wcsi.wcsi_score(sr, lr, tile_coords=[dict(x=0, y=0, width=16, height=16)])
+    with pytest.raises(ValueError):
+        wcsi.wcsi_score(sr, lr, tile_coords=[dict(x=40, y=0, w=16, h=16)])
+    with pytest.raises(ValueError):
+        wcsi.wcsi_score(sr, lr, tile=16, tile_coords=grid_coords(32, 44, tile, ov))
+    PIL.fromarray(u8(lr)).save(tmp_path / "lr.png")
+    PIL.fromarray(u8(sr)).save(tmp_path / "sr.png")
+    assert wcsi.main([str(tmp_path / "sr.png"), str(tmp_path / "lr.png"), "--tiles-jsonl", str(f),
+                      "--advice"]) == 0
+    assert "tiles from" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        wcsi.main([str(tmp_path / "sr.png"), str(tmp_path / "lr.png"), "--tiles-jsonl", str(f), "--tile", "16"])
 
 
 def test_unknown_parameter_rejected():

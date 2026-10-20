@@ -15,6 +15,7 @@ tiled against untiled inference of one model.
     python genet/wcsi.py SR.png LR.png --tile 256 --overlap 16
     python genet/wcsi.py SR.png LR.png --json scores.json --advice
     python genet/wcsi.py SR.png LR.png --tiles-dir tiles/   # unblended tile outputs
+    python genet/wcsi.py SR.png LR.png --tiles-jsonl tiles.jsonl [--tile-space sr]
 
     from wcsi import wcsi_score
     score = wcsi_score("sr.png", "lr.png", tile=256, overlap=16)       # float
@@ -26,6 +27,17 @@ Inputs: any file OpenCV or Pillow reads (png, jpg, jpeg, bmp, tif, webp),
 `overlap` are in LR pixels and should match how the SR model was tiled; the
 defaults are a nominal grid. Students are tiles, the original painting is the
 LR image, a student's canvas is the SR tile.
+
+Tile coordinates (`tile_coords=` / --tiles-jsonl) replace the grid: one JSON
+object per line, {"x": .., "y": .., "w": .., "h": ..} or {"x0", "y0", "x1",
+"y1"} (end exclusive), in LR pixels or, with tile_space="sr", SR pixels
+(rounded to whole LR pixels). Optional "id", and "path": that tile's
+unblended SR output, relative to the JSONL file (all tiles or none). If the
+tiles form a full grid they are treated exactly like tile/overlap. Otherwise
+neighbours (E_GJ, E_PCP) are tiles that touch or overlap along at least half
+of the shorter tile's side, distant tiles (E_cyto) neither touch nor overlap,
+and corners (winding numbers, holonomy) are 4-cycles of neighbours without a
+diagonal.
 
 Pipeline (CIELAB, D65; s = scale):
   Stage 1  M = D_s(SR): Gaussian (sigma = 0.4 s SR px), then s x s block mean.
@@ -450,7 +462,13 @@ def _excess(im, c, r0, r1, beta, offsets):
     return float(np.median(_jump(im, c, r0, r1, beta) - ctrl)), float(np.median(ctrl))
 
 
-def _gj_stitched(img, lr, ys, xs, th, tw, s, beta, jnd2, offsets=(3, 6), lr_offsets=(2, 3)):
+def _shared(ri, rj):
+    """Intersection (y0, y1, x0, x1) of two LR rectangles (y0, x0, h, w); may be empty."""
+    return (max(ri[0], rj[0]), min(ri[0] + ri[2], rj[0] + rj[2]),
+            max(ri[1], rj[1]), min(ri[1] + ri[3], rj[1] + rj[3]))
+
+
+def _gj_stitched(img, lr, rects, pairs, s, beta, jnd2, offsets=(3, 6), lr_offsets=(2, 3)):
     """Seam score of every overlap band of a stitched image, in JND units.
 
     At each candidate line (start, middle and end of the band) the excess jump over control lines
@@ -476,36 +494,131 @@ def _gj_stitched(img, lr, ys, xs, th, tw, s, beta, jnd2, offsets=(3, 6), lr_offs
         return best
 
     vals, imT, lrT = [], img.transpose(1, 0, 2), lr.transpose(1, 0, 2)
-    for y0 in ys:
-        for c in range(len(xs) - 1):
-            vals.append(seam(img, lr, s * xs[c + 1], s * (xs[c] + tw), s * y0, s * (y0 + th)))
-    for r in range(len(ys) - 1):
-        for x0 in xs:
-            vals.append(seam(imT, lrT, s * ys[r + 1], s * (ys[r] + th), s * x0, s * (x0 + tw)))
+    for i, j in pairs:
+        y0, y1, x0, x1 = _shared(rects[i], rects[j])
+        ri, rj = rects[i], rects[j]
+        if abs(ri[1] - rj[1]) / min(ri[3], rj[3]) >= abs(ri[0] - rj[0]) / min(ri[2], rj[2]):
+            # side by side: the seam runs down the band
+            vals.append(seam(img, lr, s * x0, s * x1, s * y0, s * y1))
+        else:
+            vals.append(seam(imT, lrT, s * y0, s * y1, s * x0, s * x1))
     return [v for v in vals if v is not None]
 
 
-def _gj_canvases(canv, ys, xs, th, tw, s, beta):
+def _gj_canvases(canv, rects, pairs, s, beta):
     """The spec's E_GJ: two neighbouring canvases compared on their shared pixels."""
-    vals, nc = [], len(xs)
-    for r in range(len(ys)):
-        for c in range(nc):
-            for rr, cc in ((r, c + 1), (r + 1, c)):
-                if rr >= len(ys) or cc >= nc:
-                    continue
-                yi, xi, yj, xj = s * ys[r], s * xs[c], s * ys[rr], s * xs[cc]
-                y_lo, y_hi = max(yi, yj), min(yi, yj) + s * th
-                x_lo, x_hi = max(xi, xj), min(xi, xj) + s * tw
-                if y_hi <= y_lo or x_hi <= x_lo:
-                    continue
-                A = canv[r * nc + c][y_lo - yi:y_hi - yi, x_lo - xi:x_hi - xi]
-                B = canv[rr * nc + cc][y_lo - yj:y_hi - yj, x_lo - xj:x_hi - xj]
-                v = float(np.sum((A - B) ** 2, -1).mean())
-                if beta:
-                    (ax, ay), (bx, by) = _grads(A), _grads(B)
-                    v += beta * float((np.sum((ax - bx) ** 2, -1) + np.sum((ay - by) ** 2, -1)).mean())
-                vals.append(v)
+    vals = []
+    for i, j in pairs:
+        y0, y1, x0, x1 = (s * v for v in _shared(rects[i], rects[j]))
+        if y1 <= y0 or x1 <= x0:
+            continue
+        (yi, xi), (yj, xj) = (s * rects[i][0], s * rects[i][1]), (s * rects[j][0], s * rects[j][1])
+        A = canv[i][y0 - yi:y1 - yi, x0 - xi:x1 - xi]
+        B = canv[j][y0 - yj:y1 - yj, x0 - xj:x1 - xj]
+        v = float(np.sum((A - B) ** 2, -1).mean())
+        if beta:
+            (ax, ay), (bx, by) = _grads(A), _grads(B)
+            v += beta * float((np.sum((ax - bx) ** 2, -1) + np.sum((ay - by) ** 2, -1)).mean())
+        vals.append(v)
     return vals
+
+
+def read_tile_coords(src, scale, space="lr"):
+    """Tile rectangles from a JSONL file (one JSON object per line) or a list of dicts.
+
+    Each tile: {"x", "y", "w", "h"} or {"x0", "y0", "x1", "y1"} (end exclusive), in LR pixels
+    (space="lr") or SR pixels (space="sr", divided by the scale). Optional "id", and "path": the
+    tile's unblended SR output, relative to the JSONL file.
+    Returns (rects as (y0, x0, h, w) in LR px, ids, paths or None, notes).
+    """
+    if space not in ("lr", "sr"):
+        raise ValueError(f"tile space must be 'lr' or 'sr', got {space!r}")
+    base = None
+    if isinstance(src, (str, Path)):
+        base = Path(src).parent
+        with open(src) as fh:
+            items = [json.loads(line) for line in fh if line.strip()]
+    else:
+        items = [dict(t) for t in src]
+    if not items:
+        raise ValueError("no tiles in the tile coordinates")
+    div = scale if space == "sr" else 1
+    rects, ids, paths, rounded = [], [], [], False
+    for n, t in enumerate(items, 1):
+        if {"x", "y", "w", "h"} <= t.keys():
+            x0, y0, x1, y1 = t["x"], t["y"], t["x"] + t["w"], t["y"] + t["h"]
+        elif {"x0", "y0", "x1", "y1"} <= t.keys():
+            x0, y0, x1, y1 = t["x0"], t["y0"], t["x1"], t["y1"]
+        else:
+            raise ValueError(f"tile {n}: needs keys x, y, w, h or x0, y0, x1, y1, got {sorted(t)}")
+        c = [v / div for v in (y0, x0, y1, x1)]
+        rounded |= any(v != round(v) for v in c)
+        y0, x0, y1, x1 = (int(round(v)) for v in c)
+        rects.append((y0, x0, y1 - y0, x1 - x0))
+        ids.append(t.get("id", n - 1))
+        paths.append(None if t.get("path") is None else (base / t["path"] if base else Path(t["path"])))
+    notes = [f"tile coordinates rounded to whole LR pixels (SR / {scale})"] if rounded else []
+    if all(p is None for p in paths):
+        paths = None
+    elif any(p is None for p in paths):
+        raise ValueError("either every tile or no tile needs a 'path'")
+    return rects, ids, paths, notes
+
+
+def _grid_positions(rects):
+    """(row, col) of every tile if the rectangles form a full grid (one tile per row/column start,
+    one height per row, one width per column), else None."""
+    ys, xs = sorted({r[0] for r in rects}), sorted({r[1] for r in rects})
+    pos = [(ys.index(r[0]), xs.index(r[1])) for r in rects]
+    if len(set(pos)) != len(rects) or len(rects) != len(ys) * len(xs):
+        return None
+    for k, size in ((0, 2), (1, 3)):
+        seen = {}
+        for p, r in zip(pos, rects):
+            if seen.setdefault(p[k], r[size]) != r[size]:
+                return None
+    return pos
+
+
+def _tile_graph(rects, pos):
+    """Pairs (I, J), neighbour and distant masks, and the 4-tile cycles around corners.
+
+    On a grid: neighbours share a side in the grid, distant pairs are more than one row or column
+    apart, cycles are the 2 x 2 blocks. Otherwise from the rectangles: neighbours touch or overlap
+    along at least half of the shorter tile's side, distant pairs neither touch nor overlap, and
+    cycles are the 4-cycles of the neighbour graph without a diagonal.
+    """
+    N = len(rects)
+    I, J = np.triu_indices(N, 1)
+    if pos is not None:
+        R, C = np.array([p[0] for p in pos]), np.array([p[1] for p in pos])
+        dr, dc = np.abs(R[I] - R[J]), np.abs(C[I] - C[J])
+        at = {p: k for k, p in enumerate(pos)}
+        cyc = [[at[(r, c)], at[(r, c + 1)], at[(r + 1, c + 1)], at[(r + 1, c)]]
+               for r in range(R.max()) for c in range(C.max())]
+        return I, J, dr + dc == 1, np.maximum(dr, dc) > 1, np.array(cyc, np.int64).reshape(-1, 4)
+    y0, x0, h, w = (np.array([r[k] for r in rects]) for k in range(4))
+    ih = np.minimum(y0[I] + h[I], y0[J] + h[J]) - np.maximum(y0[I], y0[J])
+    iw = np.minimum(x0[I] + w[I], x0[J] + w[J]) - np.maximum(x0[I], x0[J])
+    touch = (ih >= 0) & (iw >= 0)
+    near = touch & (np.maximum(ih / np.minimum(h[I], h[J]), iw / np.minimum(w[I], w[J])) >= 0.5)
+    adj = [set() for _ in range(N)]
+    for a, b in zip(I[near], J[near]):
+        adj[a].add(b)
+        adj[b].add(a)
+    seen, cyc = set(), []
+    for a in range(N):
+        for c in range(a + 1, N):
+            if c in adj[a]:
+                continue
+            common = sorted(adj[a] & adj[c])
+            for m, b in enumerate(common):
+                for d in common[m + 1:]:
+                    key = frozenset((a, b, c, d))
+                    if d not in adj[b] and key not in seen:
+                        seen.add(key)
+                        cyc.append([a, b, c, d])
+    return I, J, near, ~touch, np.array(cyc, np.int64).reshape(-1, 4)
 
 
 def _wmean(w, x, prior):
@@ -572,13 +685,18 @@ def _match_scale(sr, lr, scale):
 
 # ---------------------------------------------------------------- the score
 
-def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_details=False, **params):
+def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_details=False,
+               tile_coords=None, tile_space="lr", **params):
     """WCSI of a super-resolved image `sr` against its low-resolution reference `lr`.
 
     sr, lr   paths, arrays or tensors. scale: integer SR/LR factor (inferred if None).
     tile, overlap   the SR model's tile grid in LR pixels (nominal grid if None).
-    tiles    optional unblended SR tile outputs (paths or arrays), row-major over the
-             grid, each (scale*tile)^2; enables the spec's overlap comparison in E_GJ.
+    tile_coords     instead of tile/overlap: the tiles themselves, as a JSONL path or a list
+             of dicts (see read_tile_coords), in LR (tile_space="lr") or SR ("sr") pixels.
+    tiles    optional unblended SR tile outputs (paths or arrays), in the order of the
+             tiles (row-major over a grid), each scale times its tile's size; enables the
+             spec's overlap comparison in E_GJ. With tile_coords, the JSONL "path" entries
+             are used when tiles is None.
     params   any key of DEFAULTS (eta, kappa, weights, sigma_cyto, jnd_*, ...).
     Returns the score in (0, 100], or a dict with every term, per-tile psi, psi0,
     r_i and advice when return_details is True.
@@ -593,17 +711,35 @@ def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_d
     lr_rgb, lr_white = load_rgb(lr)
     s, sr_rgb, lr_rgb, notes = _match_scale(sr_rgb, lr_rgb, scale)
     H0, W0 = lr_rgb.shape[:2]
-    if tile is None:
-        tile = max(8, min(1024 // s, min(H0, W0) // 3))
-        notes.append(f"nominal grid (tile {tile} LR px); pass tile/overlap to match the SR model")
-    if overlap is None:
-        overlap = tile // 16
-    th, tw = min(tile, H0), min(tile, W0)
-    if not 0 <= overlap < min(th, tw):
-        raise ValueError(f"overlap {overlap} must be in [0, {min(th, tw)})")
-    ys, xs = tile_starts(H0, th, overlap), tile_starts(W0, tw, overlap)
-    nr, nc = len(ys), len(xs)
-    N = nr * nc
+    if tile_coords is not None:
+        if tile is not None or overlap is not None:
+            raise ValueError("pass either tile/overlap or tile_coords, not both")
+        rects, ids, paths, cnotes = read_tile_coords(tile_coords, s, tile_space)
+        notes += cnotes
+        for k, (y0, x0, h, w_) in enumerate(rects):
+            if y0 < 0 or x0 < 0 or y0 + h > H0 or x0 + w_ > W0 or min(h, w_) < 8:
+                raise ValueError(f"tile {ids[k]}: LR rect x={x0} y={y0} w={w_} h={h} must lie inside "
+                                 f"the LR image {W0}x{H0} and be at least 8 px on each side")
+        if tiles is None and paths is not None:
+            tiles = paths
+        layout = dict(source="coords")
+    else:
+        if tile is None:
+            tile = max(8, min(1024 // s, min(H0, W0) // 3))
+            notes.append(f"nominal grid (tile {tile} LR px); pass tile/overlap to match the SR model")
+        if overlap is None:
+            overlap = tile // 16
+        th, tw = min(tile, H0), min(tile, W0)
+        if not 0 <= overlap < min(th, tw):
+            raise ValueError(f"overlap {overlap} must be in [0, {min(th, tw)})")
+        rects = [(y0, x0, th, tw) for y0 in tile_starts(H0, th, overlap) for x0 in tile_starts(W0, tw, overlap)]
+        ids = list(range(len(rects)))
+        layout = dict(source="grid", tile=[th, tw], overlap=overlap)
+    N = len(rects)
+    pos = _grid_positions(rects)
+    I, J, near, far, corners = _tile_graph(rects, pos)
+    layout.update(n_tiles=N, rows=1 + max(p[0] for p in pos) if pos else None,
+                  cols=1 + max(p[1] for p in pos) if pos else None)
     sr_lab = srgb_to_lab(sr_rgb, sr_white)
     lr_lab = srgb_to_lab(lr_rgb, lr_white)
     del sr_rgb, lr_rgb
@@ -612,24 +748,23 @@ def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_d
     if tiles is not None:
         tiles = list(tiles)
         if len(tiles) != N:
-            raise ValueError(f"got {len(tiles)} tile outputs for a {nr}x{nc} grid")
+            raise ValueError(f"got {len(tiles)} tile outputs for {N} tiles")
         canv = []
-        for t in tiles:
+        for t, (_, _, h, w_) in zip(tiles, rects):
             a, wh = load_rgb(t)
-            if a.shape[:2] != (s * th, s * tw):
-                raise ValueError(f"tile output {a.shape[1]}x{a.shape[0]}, expected {s * tw}x{s * th}")
+            if a.shape[:2] != (s * h, s * w_):
+                raise ValueError(f"tile output {a.shape[1]}x{a.shape[0]}, expected {s * w_}x{s * h}")
             canv.append(srgb_to_lab(a, wh))
 
     sigma, f_lo = 0.4 * s, 1.0 / (2 * s)
     feats, feats0, de2 = [], [], []
-    for r, y0 in enumerate(ys):
-        for c, x0 in enumerate(xs):
-            Hc = canv[r * nc + c] if canv is not None else sr_lab[s * y0:s * (y0 + th), s * x0:s * (x0 + tw)]
-            Lc = lr_lab[y0:y0 + th, x0:x0 + tw]
-            M, ft = tile_features(Hc, s, sigma, f_lo)
-            de2.append(float(np.mean(ciede2000(M, Lc) ** 2)))
-            feats.append(ft)
-            feats0.append(tile_features(Lc, s, sigma, f_lo)[1])
+    for k, (y0, x0, h, w_) in enumerate(rects):
+        Hc = canv[k] if canv is not None else sr_lab[s * y0:s * (y0 + h), s * x0:s * (x0 + w_)]
+        Lc = lr_lab[y0:y0 + h, x0:x0 + w_]
+        M, ft = tile_features(Hc, s, sigma, f_lo)
+        de2.append(float(np.mean(ciede2000(M, Lc) ** 2)))
+        feats.append(ft)
+        feats0.append(tile_features(Lc, s, sigma, f_lo)[1])
 
     def col(key, src=feats):
         return np.array([f[key] for f in src], np.float64)
@@ -673,13 +808,7 @@ def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_d
     w2 = bures_w2(mu, cov, mu0, kappa * cov0)
     e_rg = float(np.mean(np.array(de2) + p["eta"] * w2) / (jnd_de ** 2 * (1 + p["eta"])))
 
-    # all tile pairs, their grid relation and material affinity in the LR
-    rc = [(r, c) for r in range(nr) for c in range(nc)]
-    I, J = np.triu_indices(N, 1)
-    dr, dc = np.abs(I // nc - J // nc), np.abs(I % nc - J % nc)
-    near, far = dr + dc == 1, np.maximum(dr, dc) > 1
-    corners = np.array([[r * nc + c, r * nc + c + 1, (r + 1) * nc + c + 1, (r + 1) * nc + c]
-                        for r in range(nr - 1) for c in range(nc - 1)], np.int64).reshape(-1, 4)
+    # material affinity in the LR of all tile pairs (their relation: _tile_graph)
     w = np.empty(len(I))
     for k0 in range(0, len(I), _CHUNK):
         a, b = I[k0:k0 + _CHUNK], J[k0:k0 + _CHUNK]
@@ -687,11 +816,12 @@ def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_d
                                    - np.mean((lr_band[a] - lr_band[b]) ** 2, 1) / (2 * p["tau_band"] ** 2))
 
     # E_GJ: seam continuity
+    pairs = list(zip(I[near].tolist(), J[near].tolist()))
     if canv is not None:
-        gj = [v / jnd_de ** 2 for v in _gj_canvases(canv, ys, xs, th, tw, s, p["beta_grad"])]
+        gj = [v / jnd_de ** 2 for v in _gj_canvases(canv, rects, pairs, s, p["beta_grad"])]
         notes.append("E_GJ: overlap comparison of the tile outputs")
     else:
-        gj = _gj_stitched(sr_lab, lr_lab, ys, xs, th, tw, s, p["beta_grad"], jnd_de ** 2)
+        gj = _gj_stitched(sr_lab, lr_lab, rects, pairs, s, p["beta_grad"], jnd_de ** 2)
         notes.append("E_GJ: stitched image, excess jump at seam lines (pass tiles= for the overlap comparison)")
     e_gj = float(np.mean(gj)) if gj else None
 
@@ -775,7 +905,7 @@ def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_d
     score = 100.0 / (1.0 + F / F_jnd) if F_jnd > 0 else 100.0
     for k in TERMS:
         if values[k] is None:
-            notes.append(f"{k}: undefined for a {nr}x{nc} grid, left out of F")
+            notes.append(f"{k}: undefined for this layout ({N} tiles), left out of F")
     if not return_details:
         return score
 
@@ -786,16 +916,17 @@ def wcsi_score(sr, lr, scale=None, tile=None, overlap=None, tiles=None, return_d
                    E_cyto=cyto_parts, E_sheaf_edges=sheaf_edges, E_sheaf=sheaf_parts, holonomy_max_abs=hol_max,
                    affinity_mean=float(w.mean()) if len(w) else None),
         scale=s, kappa=kappa,
-        grid=dict(rows=nr, cols=nc, tile=[th, tw], overlap=overlap, ys=ys, xs=xs),
+        layout=layout,
         jnd=dict(dE00=jnd_de, Q=jnd_q, freq_rel=p["jnd_freq"], alpha=jnd_a,
                  cov_rel=p["jnd_cov"], gram_rel=p["jnd_gram"]),
         dims=list(DIMS),
-        tiles=[dict(row=r, col=c, y0=ys[r], x0=xs[c], psi=psi[i].tolist(),
+        tiles=[dict(id=ids[i], y0=y0, x0=x0, h=h, w=w_,
+                    row=pos[i][0] if pos else None, col=pos[i][1] if pos else None, psi=psi[i].tolist(),
                     psi0=psi0[i].tolist(), r=rvec[i].tolist(), step=step[i].tolist(),
                     texture_visibility=float(vis[i]),
                     advice=_advice(step_c[i], psi[i], np.sqrt(jnd_t[i] ** 2 + se[i] ** 2 + se0[i] ** 2),
                                    fbar[i], vis[i]))
-               for i, (r, c) in enumerate(rc)],
+               for i, (y0, x0, h, w_) in enumerate(rects)],
         notes=notes,
     )
 
@@ -813,7 +944,10 @@ def main(argv=None):
     ap.add_argument("--scale", type=int, help="SR/LR factor (default: inferred)")
     ap.add_argument("--tile", type=int, help="tile size in LR pixels, as used by the SR model")
     ap.add_argument("--overlap", type=int, help="tile overlap in LR pixels (default: tile // 16)")
-    ap.add_argument("--tiles-dir", help="unblended tile outputs; sorted file names = row-major grid order")
+    ap.add_argument("--tiles-jsonl", help="tile coordinates, one JSON object per line (replaces --tile/--overlap)")
+    ap.add_argument("--tile-space", choices=("lr", "sr"), default="lr",
+                    help="pixel space of the --tiles-jsonl coordinates (default: lr)")
+    ap.add_argument("--tiles-dir", help="unblended tile outputs; sorted file names = tile order (row-major grid)")
     ap.add_argument("--weights", help="w1..w5 for E_RG,E_GJ,E_PCP,E_cyto,E_sheaf, comma separated")
     ap.add_argument("--kappa", default="auto", help="covariance expansion LR -> SR, or 'auto'")
     ap.add_argument("--json", help="write every term and the per-tile vectors to this file")
@@ -831,11 +965,19 @@ def main(argv=None):
     if args.tiles_dir:
         tiles = sorted((f for f in Path(args.tiles_dir).iterdir() if f.suffix.lower() in IMAGE_EXT), key=_natural_key)
 
+    if args.tiles_jsonl and (args.tile is not None or args.overlap is not None):
+        ap.error("--tiles-jsonl replaces --tile/--overlap")
     d = wcsi_score(args.sr, args.lr, scale=args.scale, tile=args.tile, overlap=args.overlap,
-                   tiles=tiles, return_details=True, **params)
-    g = d["grid"]
-    print(f"WCSI {d['wcsi']:.2f}   scale {d['scale']}x, {g['rows']}x{g['cols']} tiles of "
-          f"{g['tile'][1]}x{g['tile'][0]} LR px, overlap {g['overlap']}")
+                   tiles=tiles, return_details=True, tile_coords=args.tiles_jsonl,
+                   tile_space=args.tile_space, **params)
+    g = d["layout"]
+    if g["source"] == "grid":
+        shape = (f"{g['rows']}x{g['cols']} tiles of {g['tile'][1]}x{g['tile'][0]} LR px, "
+                 f"overlap {g['overlap']}")
+    else:
+        shape = f"{g['n_tiles']} tiles from {args.tiles_jsonl}" + \
+            (f" ({g['rows']}x{g['cols']} grid)" if g["rows"] else " (not a grid)")
+    print(f"WCSI {d['wcsi']:.2f}   scale {d['scale']}x, {shape}")
     labels = dict(E_RG="coarse-grained colour fidelity to LR", E_GJ="seam continuity",
                   E_PCP="texture orientation between neighbours, corner defects",
                   E_cyto="texture agreement of distant same-material tiles",
@@ -849,7 +991,8 @@ def main(argv=None):
         print(f"  note: {n}")
     if args.advice:
         for t in d["tiles"]:
-            print(f"  tile r{t['row']}c{t['col']}: {t['advice']}")
+            name = f"r{t['row']}c{t['col']}" if t["row"] is not None else t["id"]
+            print(f"  tile {name}: {t['advice']}")
     if args.json:
         Path(args.json).write_text(json.dumps(d, indent=1))
         print(f"  wrote {args.json}")
