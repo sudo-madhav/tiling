@@ -1,0 +1,62 @@
+{
+  "dataset": "div8k",
+  "gt": "/path/to/div8k/gt",
+  "out": "/path/to/wcsi_ablation_out",
+  "note": "Copy this file to genet_ablation/config.json and edit the paths. config.json is gitignored. Do not download DIV8K. Official DIV8K is 1500 train / 100 val / 100 test (Gu et al., ICCVW 2019); this harness scores every image in gt/, which the user reports as about 1400-1500 files.",
+  "scales": {
+    "8": {
+      "lr": "/path/to/div8k/lr_x8",
+      "lr_recipe": "three successive bicubic x2 downsamples of gt, so each side is 8x smaller",
+      "methods": {
+        "bicubic": "",
+        "vosr": "/path/to/div8k/sr_x8/vosr",
+        "casr": "/path/to/div8k/sr_x8/casr",
+        "seedvr": "/path/to/div8k/sr_x8/seedvr",
+        "vosr_tile256": {"path": "", "model_tile_sr": 256},
+        "vosr_tile512": {"path": "", "model_tile_sr": 512},
+        "vosr_tile1024": {"path": "", "model_tile_sr": 1024},
+        "vosr_align_none": "",
+        "vosr_align_wavelet": "",
+        "vosr_align_adain": "",
+        "vosr_onestep": "",
+        "vosr_steps25_cfg0.5": "",
+        "vosr_steps25_cfg-0.5": "",
+        "vosr_steps25_cfg2": "",
+        "vosr_seed0": "",
+        "vosr_seed1": "",
+        "vosr_seed2": "",
+        "seedvr_vae256": {"path": "", "model_tile_sr": 256},
+        "seedvr_vae512": {"path": "", "model_tile_sr": 512},
+        "seedvr_vae1024": {"path": "", "model_tile_sr": 1024},
+        "seedvr_wavelet_off": ""
+      }
+    },
+    "4": {
+      "lr": "/path/to/div8k/lr_x4",
+      "lr_recipe": "two successive bicubic x2 downsamples of gt, so each side is 4x smaller",
+      "methods": {
+        "bicubic": "",
+        "vosr": "/path/to/div8k/sr_x4/vosr",
+        "casr": "/path/to/div8k/sr_x4/casr",
+        "seedvr": "/path/to/div8k/sr_x4/seedvr",
+        "vosr_tile256": {"path": "", "model_tile_sr": 256},
+        "vosr_tile512": {"path": "", "model_tile_sr": 512},
+        "vosr_tile1024": {"path": "", "model_tile_sr": 1024},
+        "vosr_align_none": "",
+        "vosr_align_wavelet": "",
+        "vosr_align_adain": "",
+        "vosr_onestep": "",
+        "vosr_steps25_cfg0.5": "",
+        "vosr_steps25_cfg-0.5": "",
+        "vosr_steps25_cfg2": "",
+        "vosr_seed0": "",
+        "vosr_seed1": "",
+        "vosr_seed2": "",
+        "seedvr_vae256": {"path": "", "model_tile_sr": 256},
+        "seedvr_vae512": {"path": "", "model_tile_sr": 512},
+        "seedvr_vae1024": {"path": "", "model_tile_sr": 1024},
+        "seedvr_wavelet_off": ""
+      }
+    }
+  }
+}
