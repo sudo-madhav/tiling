@@ -17,6 +17,7 @@ __pycache__/
 
 # Local ablation paths (the example config is committed)
 genet_ablation/config.json
+with_encoder/configs/encoders.json
 
 # Local datasets (never commit data; repo is public)
 dataset/

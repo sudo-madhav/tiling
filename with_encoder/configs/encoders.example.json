@@ -1,0 +1,48 @@
+{
+  "_note": "Copy to with_encoder/configs/encoders.json (gitignored) and point WITH_ENCODER_WEIGHTS at a directory that already holds the weights. Nothing is downloaded: every adapter loads with local_files_only and the Hugging Face offline flags on. Check with: python with_encoder/encoders/registry.py --check with_encoder/configs/encoders.json",
+  "device": "cuda",
+  "dtype": "float16",
+  "stack": {
+    "texture": {
+      "type": "vgg19",
+      "path": "$WITH_ENCODER_WEIGHTS/vgg19-dcbb9e9d.pth",
+      "layers": ["relu2_2", "relu3_4", "relu4_4"],
+      "family": "vgg19-imagenet",
+      "_why": "The texture-statistics network of Gatys et al. and the backbone family of LPIPS/DISTS, so the baselines and our terms differ in how features are compared, not in which features. relu1_2 (stride 1) is left out: at stride 1 it is close to pixels and costs 64 channels x every pixel."
+    },
+    "semantic": {
+      "type": "dinov2",
+      "path": "$WITH_ENCODER_WEIGHTS/dinov2-with-registers-large",
+      "hidden_layers": [-1],
+      "family": "dinov2",
+      "_why": "Material identity for the tile graph and semantic fidelity. ViT-L with registers: register tokens remove the high-norm artefact tokens that would otherwise dominate pooled descriptors. ViT-g is an ablation, not the default (about 4x the cost for a graph)."
+    },
+    "latent": {
+      "type": "vae",
+      "path": "$WITH_ENCODER_WEIGHTS/FLUX.1-schnell",
+      "subfolder": "vae",
+      "family": "flux1-ae",
+      "_why": "16-channel, stride-8 autoencoder not used by VOSR, SeedVR or (as far as known) CASR. FLUX.1-schnell is Apache-2.0; the FLUX.1-dev release is non-commercial. Optional: set to null to drop the latent terms."
+    }
+  },
+  "conflicts": {
+    "_note": "method key (exact, or prefix before '_') -> encoder families the method was built on. A latent family listed here removes the latent terms for that method; any other role is flagged and needs a cross-check run with a different encoder for that role. Verify every entry against the method's code before reporting.",
+    "vosr": ["qwen-image-vae", "sd21-vae", "dinov2"],
+    "seedvr": ["seedvr-causal-vae"],
+    "casr": []
+  },
+  "_conflict_sources": {
+    "vosr": "github.com/cswry/VOSR README: VOSR-1.4B decodes through the 16-channel Qwen-Image VAE (2D variant), VOSR-0.5B through the SD2.1 VAE or a lightweight decoder; DINOv2 weights ship with the release (torch_cache/), so DINOv2-based terms are flagged for VOSR.",
+    "seedvr": "SeedVR (Wang et al., CVPR 2025) trains its own causal video VAE. Verify against the checkpoint actually used.",
+    "casr": "Unknown which CASR this is (see genet_ablation/PROTOCOL.md). A diffusion CasSR likely decodes through a Stable Diffusion VAE; fill this in once known."
+  },
+  "alternatives": {
+    "_note": "Encoders for the ablation arms in ABLATION.md. Swap one into 'stack' per run and give the run its own --tag.",
+    "texture_convnext": {"type": "convnext", "path": "$WITH_ENCODER_WEIGHTS/convnext_large-ea097f82.pth", "arch": "convnext_large", "layers": ["stage1", "stage2"], "family": "convnext-imagenet"},
+    "semantic_dinov2_giant": {"type": "dinov2", "path": "$WITH_ENCODER_WEIGHTS/dinov2-with-registers-giant", "hidden_layers": [-1], "family": "dinov2"},
+    "semantic_dinov2_mid": {"type": "dinov2", "path": "$WITH_ENCODER_WEIGHTS/dinov2-with-registers-large", "hidden_layers": [12], "family": "dinov2"},
+    "semantic_convnext_deep": {"type": "convnext", "path": "$WITH_ENCODER_WEIGHTS/convnext_large-ea097f82.pth", "arch": "convnext_large", "layers": ["stage3"], "family": "convnext-imagenet", "_role_note": "non-DINOv2 semantic cross-check: put it in the semantic slot; its maps are relabelled to that role"},
+    "latent_sd35": {"type": "vae", "path": "$WITH_ENCODER_WEIGHTS/stable-diffusion-3.5-large", "subfolder": "vae", "family": "sd35-vae"},
+    "control_gabor": {"type": "gabor"}
+  }
+}
