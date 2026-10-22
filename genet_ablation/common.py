@@ -10,6 +10,20 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp", ".ppm"}
 
 TERMS = ("E_RG", "E_GJ", "E_PCP", "E_cyto", "E_sheaf")
 
+# Score key and terms of each metric. wcsi is v1 (genet/wcsi.py); wcsi2 and wcsi2_ref are
+# genet/wcsi2.py without and with the ground truth.
+METRICS = {
+    "wcsi": ("wcsi", TERMS),
+    "wcsi2": ("wcsi2", ("E_low", "E_seam", "E_detail", "E_consist")),
+    "wcsi2_ref": ("wcsi2_ref", ("E_tone", "E_colour", "E_struct", "E_detail", "E_consist", "E_seam")),
+}
+
+
+def metric_terms(metric):
+    if metric not in METRICS:
+        raise ValueError(f"unknown metric {metric!r} (have {sorted(METRICS)})")
+    return METRICS[metric][1]
+
 # Primary methods. Anything else in the config is an optional re-inference run.
 PRIMARY_METHODS = ("bicubic", "vosr", "casr", "seedvr")
 
@@ -113,10 +127,23 @@ def usable_lr_size(lr_wh, sr_wh, scale):
     return min(lr_w, sr_w // scale), min(lr_h, sr_h // scale)
 
 
-def result_path(out_dir, dataset, scale, method, tile_sr, overlap_sr, offset_sr, stem):
-    folder = (Path(out_dir) / dataset / f"x{scale}" / method
-              / f"tile{tile_sr}_ov{overlap_sr}_off{offset_sr}")
-    return folder / f"{stem}.json"
+def result_path(out_dir, dataset, scale, method, tile_sr, overlap_sr, offset_sr, stem, metric="wcsi"):
+    """v1 results keep their original layout; other metrics get their own subfolder."""
+    root = Path(out_dir) / dataset
+    if metric != "wcsi":
+        root = root / metric
+    return root / f"x{scale}" / method / f"tile{tile_sr}_ov{overlap_sr}_off{offset_sr}" / f"{stem}.json"
+
+
+def parse_devices(text):
+    """'cuda:0,cuda:1' or 'cuda:0*2' (two workers on that GPU) -> one entry per worker."""
+    out = []
+    for token in (t.strip() for t in (text or "").split(",")):
+        if not token:
+            continue
+        dev, _, rep = token.partition("*")
+        out += [dev] * (int(rep) if rep else 1)
+    return out
 
 
 def select_stems(stems, limit=0, shard=None):

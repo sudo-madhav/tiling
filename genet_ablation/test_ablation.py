@@ -118,6 +118,44 @@ def test_half_tile_offset_scores(tmp_path):
     assert 0 < row["wcsi"] <= 100
 
 
+def test_parse_devices():
+    assert common.parse_devices("cuda:0,cuda:1") == ["cuda:0", "cuda:1"]
+    assert common.parse_devices("cuda:0*2, cuda:1") == ["cuda:0", "cuda:0", "cuda:1"]
+    assert common.parse_devices("") == []
+
+
+def test_wcsi2_sweep_and_summary(tmp_path):
+    path, _ = _dataset(tmp_path)
+    args = ["--config", str(path), "--scales", "2", "--methods", "bicubic,vosr", "--targets", "sr,gt",
+            "--tiles", "32", "--workers", "1"]
+    assert score_sweep.main(args + ["--metric", "wcsi2", "--calib", "none"]) == 0
+    rows = [json.loads(p.read_text()) for p in (tmp_path / "out" / "toy" / "wcsi2").rglob("*.json")]
+    assert len(rows) == 2 * 3 and all(r["status"] == "ok" for r in rows)
+    assert all(r["metric"] == "wcsi2" and 0 < r["score"] <= 100 and "E_detail" in r for r in rows)
+    assert score_sweep.main(args + ["--metric", "wcsi2_ref"]) == 0
+    ref = [json.loads(p.read_text()) for p in (tmp_path / "out" / "toy" / "wcsi2_ref").rglob("*.json")]
+    assert {r["method"] for r in ref} == {"bicubic", "vosr"}  # gt is the reference, not a target
+    assert all(r["status"] == "ok" and r["score"] < 100 for r in ref)
+    assert score_sweep.main(args) == 0  # v1 next to them, in the original layout
+    assert summarize.main(["--out", str(tmp_path / "out"), "--dataset", "toy", "--metric", "wcsi2"]) == 0
+    paired = list(csv_rows(tmp_path / "out" / "toy" / "wcsi2" / "vs_gt.csv"))
+    assert {r["method"] for r in paired} == {"bicubic", "vosr"} and "delta_E_detail" in paired[0]
+    assert summarize.main(["--out", str(tmp_path / "out"), "--dataset", "toy", "--metric", "wcsi2_ref"]) == 0
+    assert "Against the ground truth" not in (tmp_path / "out" / "toy" / "wcsi2_ref" / "summary.md").read_text()
+    assert summarize.main(["--out", str(tmp_path / "out"), "--dataset", "toy"]) == 0
+    v1 = list(csv_rows(tmp_path / "out" / "toy" / "by_condition.csv"))
+    assert sum(int(r["n"]) for r in v1) == 2 * 3
+
+
+def test_devices_run_torch_workers(tmp_path):
+    pytest.importorskip("torch")
+    path, _ = _dataset(tmp_path, n=1)
+    assert score_sweep.main(["--config", str(path), "--scales", "2", "--methods", "vosr", "--targets", "sr",
+                             "--tiles", "32", "--metric", "wcsi2_ref", "--devices", "torch:cpu*2"]) == 0
+    row = json.loads(next((tmp_path / "out").rglob("*.json")).read_text())
+    assert row["status"] == "ok" and row["device"] == "torch:cpu"
+
+
 def csv_rows(path):
     import csv
     with path.open() as fh:

@@ -1,13 +1,15 @@
 # WCSI ablation protocol (DIV8K, 4x and 8x)
 
-Instruction for a model that runs or extends this directory. The scripts already implement this contract. Extend them. Do not rewrite them from scratch, and do not modify `genet/wcsi.py`.
+Instruction for a model that runs or extends this directory. The scripts already implement this contract. Extend them. Do not rewrite them from scratch, and do not modify `genet/wcsi.py` or `genet/wcsi2.py` from here.
+
+Three metrics share the harness (`--metric`): `wcsi` (v1, the default, `genet/wcsi.py`), `wcsi2` (WCSI-2 without reference) and `wcsi2_ref` (WCSI-2 against the ground truth), both in `genet/wcsi2.py`. See `genet/WCSI2.md` for why v2 exists and how it is calibrated.
 
 ## Hard rules
 
 - Do not download DIV8K or any other dataset. The images are already on disk. Paths live in `genet_ablation/config.json`, copied from `config.example.json` and edited. `config.json` is gitignored.
 - Do not run the full sweep unless the user asked to run it. A full pass is on the order of 10^4 to 10^5 scores, about 10 seconds each on a 33-megapixel image.
 - Do not run super-resolution inference from this directory. These scripts only score images that already exist. Re-inference ablations are extra folders the user fills in.
-- Do not add fidelity metrics (PSNR, SSIM, LPIPS) here. This harness is WCSI only.
+- Do not add fidelity metrics (PSNR, SSIM, LPIPS) here. This harness is WCSI (v1 and v2) only.
 - Score files are JSON, one image per file, so a killed run resumes. Do not switch the output to a single CSV written at the end.
 - WCSI's `tile` and `overlap` are in low-resolution pixels. Every tile size in this experiment is quoted in upscaled (SR) pixels and converted by dividing by the scale. 1024 SR px at 8x is tile 128. At 4x it is tile 256.
 
@@ -27,11 +29,19 @@ The five terms, all in JND units:
 
 Natural photographs score low, mostly from E_cyto and the spectral-slope part of E_sheaf, because two distant patches of the same colour do not share one texture. Bicubic scores high because it invents nothing and so cannot disagree with itself. A method with WCSI above the ground truth is more self-consistent than the photograph. It is not closer to the photograph. The summary table reports the difference and the ratio anyway, because that comparison was requested. Rank methods by the term deltas, not by which WCSI is larger.
 
+**WCSI-2** (`genet/wcsi2.py`) fixes the v1 ranking failure (the ground truth scoring below generative methods). Every tile is described by the band it invents above the LR Nyquist limit (log energy per octave and orientation, orientation tensor, chroma energy, top-octave peak ratio). Without reference, the target for that vector is predicted from the LR tile by a model fitted on ground-truth / LR pairs, and every term counts only the excess over what natural images score. Terms: `E_low` (coarse colour against the LR), `E_seam`, `E_detail` (missing or excess invented detail per tile), `E_consist` (tiles of one material departing differently). With reference (`wcsi2_ref`), the target is the ground-truth tile and the terms are `E_tone`, `E_colour`, `E_struct`, `E_detail`, `E_consist`, `E_seam`. The ground truth scores 100 there, so `--targets gt` is skipped.
+
 Call:
 
 ```python
 details = wcsi.wcsi_score(sr, lr, scale=8, tile=64, overlap=4, return_details=True)
 # details["wcsi"], details["terms"][name], details["F_total"], details["kappa"], details["layout"]
+```
+
+```python
+d = wcsi2.wcsi2_score(sr, lr, scale=8, tile=64, overlap=4, calib="auto", device="cuda:0", return_details=True)
+d = wcsi2.wcsi2_ref_score(sr, gt, lr, scale=8, tile=64, overlap=4, device="cuda:0", return_details=True)
+# d["wcsi2"] / d["wcsi2_ref"], d["terms"][name], d["F_total"], d["layout"], d["tiles"] (per-tile z and advice)
 ```
 
 `sr` and `lr` may be paths or HxWx3 arrays. `tile_coords` replaces `tile` and `overlap` when the grid does not start at the origin. Passing both raises.
@@ -104,6 +114,8 @@ Config keys for the crossed runs are already in `config.example.json` (`vosr_til
 5. `align_method none` raises E_RG relative to wavelet.
 6. Step count and cfg move E_cyto and E_sheaf more than E_RG.
 7. Three seeds of one VOSR setting: report the per-image standard deviation. If it is comparable to the gap between methods, do not rank those methods on one seed.
+8. WCSI-2 without reference: the ground truth scores at or above every method on most images (`frac_above_gt` well below 0.5). Bicubic loses on `E_detail` (missing detail), not on `E_consist`.
+9. WCSI-2 with reference: methods that hallucinate one plausible texture everywhere have high `rho_coherence` and low `E_consist` but high `E_detail`; tile-by-tile hallucination raises `E_consist`.
 
 ## Scripts
 
@@ -113,8 +125,8 @@ All commands assume the repository root, `python3`, and `GENET_ABLATION_CONFIG` 
 | --- | --- |
 | `common.py` | config, stem index, SR-px to LR-px, offset lattice, output paths |
 | `inventory.py` | pair stems and optionally print size ratios. Scores nothing. |
-| `score_sweep.py` | the sweep. `--dry-run` prints the job count. `--limit N` takes the first N stems. `--shard i/n` splits the sorted stems. `--workers` is a process pool. `--retry-errors` recomputes JSON with status error or missing. |
-| `summarize.py` | `by_condition.csv`, `vs_gt.csv`, `summary.md` |
+| `score_sweep.py` | the sweep. `--metric wcsi\|wcsi2\|wcsi2_ref`. `--dry-run` prints the job count. `--limit N` takes the first N stems. `--shard i/n` splits the sorted stems. `--workers` is a process pool. `--devices cuda:0,cuda:1` (or `cuda:0*2` for two workers on one GPU) runs WCSI-2 on torch with one worker process per entry, instead of `--workers`. `--calib` picks the WCSI-2 natural model (`auto`, a JSON, `none`). `--retry-errors` recomputes JSON with status error or missing. |
+| `summarize.py` | `by_condition.csv`, `vs_gt.csv`, `summary.md`; `--metric` as above |
 | `sh/*.sh` | the invocations below. They are not run by default. |
 
 ```bash
@@ -133,15 +145,17 @@ Shells:
 - `sh/score_div8k.sh` — every paired stem. Edit `--workers` for the machine.
 - `sh/score_alignment.sh` — pilot, offsets `0,half`, overlaps `0,32,128`, tiles 512 and 1024. This is the seam probe.
 - `sh/score_model_tiles.sh` — the `vosr_tile*` and `seedvr_vae*` keys, tiles 256, 512, 1024, so each model tile is scored on a matched grid and on the other two. Skips keys whose path is empty.
-- `sh/summarize.sh` — writes the tables.
+- `sh/score_wcsi2.sh` — WCSI-2 without and with reference on every paired stem, primary grid. `GPUS=cuda:0,...` (default 8 GPUs; empty = numpy on `WORKERS` processes), `CALIB`, `TILES`.
+- `sh/summarize.sh` — writes the tables for every metric that has results.
 
 Output path:
 
 ```
-{out}/{dataset}/x{scale}/{method}/tile{tile}_ov{overlap}_off{offset}/{stem}.json
+{out}/{dataset}/x{scale}/{method}/tile{tile}_ov{overlap}_off{offset}/{stem}.json            # wcsi (v1)
+{out}/{dataset}/{metric}/x{scale}/{method}/tile{tile}_ov{overlap}_off{offset}/{stem}.json   # wcsi2, wcsi2_ref
 ```
 
-JSON fields: `dataset, scale, method, image, tile_sr, overlap_sr, offset_sr, status, wcsi, F_total, E_RG, E_GJ, E_PCP, E_cyto, E_sheaf, kappa, n_tiles, seconds, sr_w, sr_h, notes, error`.
+JSON fields: `dataset, scale, method, image, tile_sr, overlap_sr, offset_sr, metric, status, score, F_total, n_tiles, seconds, sr_w, sr_h, device, notes, error`, the metric's terms, and `wcsi` + `kappa` (v1), `wcsi2` + `calibration` (the natural model file used), or `wcsi2_ref` + `rho_coherence`. v1 JSON written before `metric` existed is read as `wcsi`. `summarize.py --metric wcsi2` writes its tables under `{out}/{dataset}/wcsi2/`.
 
 `status` is `ok`, `missing` (stem absent from that method directory), or `error` (WCSI raised, usually a size mismatch). `summarize.py` uses only `ok`, and lists failures at the bottom.
 
@@ -149,7 +163,7 @@ JSON fields: `dataset, scale, method, image, tile_sr, overlap_sr, offset_sr, sta
 
 ## Runtime
 
-Budget about 10 seconds and a little over 1 GB per 33-megapixel score, from the existing WCSI measurements. Primary grid: 2 scales x 3 tiles x (gt + bicubic + 3 methods) x 1500 images = 54,000 scores, on the order of a day on 8 cores if every method folder exists. Bicubic synthesis is slower than reading a file. The pilot shell exists so the full shell is a deliberate second step.
+Budget about 10 seconds and a little over 1 GB per 33-megapixel score, from the existing WCSI measurements. WCSI-2 on numpy, measured on 3-megapixel DIV2K images on one CPU process: about 1 s without and 3 s with reference, so roughly 11 s and 35 s at 33 megapixels. With `--devices`, the per-pixel work (CIELAB, coarse / residual split, tile spectra, phase congruency, gradients) runs on the GPU; decoding the PNG and the per-tile tables stay on the CPU, so use two workers per GPU (`cuda:k*2`) when decoding dominates. Primary grid: 2 scales x 3 tiles x (gt + bicubic + 3 methods) x 1500 images = 54,000 scores, on the order of a day on 8 cores if every method folder exists. Bicubic synthesis is slower than reading a file. The pilot shell exists so the full shell is a deliberate second step.
 
 ## How to extend
 
@@ -157,8 +171,8 @@ Budget about 10 seconds and a little over 1 GB per 33-megapixel score, from the 
 - A new analysis factor belongs in `score_sweep.py`'s CLI and in `common.result_path`, so old JSON is not overwritten.
 - Keep the per-image JSON small. Per-tile vectors and the figures from `genet/wcsi_viz.py` are for a handful of stems (`--limit` plus a stem list), not for 1500 images.
 - Tests are `pytest -q genet_ablation/test_ablation.py`. They use tiny synthetic images. Do not point them at DIV8K.
-- `with_ref_genet/` is a separate metric that uses the ground-truth image inside the score. It is not part of this harness. Do not fold ground truth into `wcsi_score`.
+- The ground truth enters a score only through `--metric wcsi2_ref`. Do not fold it into `wcsi_score` or `wcsi2_score`. `with_ref_genet/gmci.py` (GMCI) is superseded by `wcsi2_ref` and is not part of this harness.
 
 ## Out of scope
 
-Inference commands, dataset download, PSNR/SSIM/LPIPS, and any metric that reads the ground truth while computing the score. Comparing an already-computed WCSI(gt) with WCSI(sr) is in scope and is what `summarize.py` does.
+Inference commands, dataset download, PSNR/SSIM/LPIPS, and any metric other than `wcsi2_ref` that reads the ground truth while computing the score. Comparing an already-computed WCSI(gt) with WCSI(sr) is in scope and is what `summarize.py` does.
