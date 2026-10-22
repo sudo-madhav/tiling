@@ -1,5 +1,8 @@
 # GMCI protocol
 
+Legacy. New work uses `genet/wcsi2.py` (`wcsi2_ref_score`, see `genet/WCSI2.md`). This protocol
+describes GMCI as it was, for reproducing earlier numbers.
+
 Instruction for a model extending `with_ref_genet/`. The score is implemented in `gmci.py`. Do not fold it into `genet/wcsi.py` and do not change WCSI. WCSI answers a different question: consistency of a super-resolved image with its low-resolution input, with no ground truth.
 
 ## What the four numbers are for
