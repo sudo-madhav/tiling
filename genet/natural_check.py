@@ -18,7 +18,8 @@ downloaded or trained; the stand-ins are:
   seam            odd tile columns pasted 2 px misregistered
 
     python genet/natural_check.py --gt-dir GT --lr-dir LR --scale 8 --tile-sr 256 \
-        --first 851 --count 50 --out check_x8.csv --workers 4 [--calib genet/calib/wcsi2_x8_t256.json]
+        --first 50 --count 50 --out check_x8.csv --workers 4 [--calib genet/calib/wcsi2_x8_t256.json]
+    (--first is an index into the sorted stems: 50 is DIV2K 0851 when the directory holds 0801-0900)
     python genet/natural_check.py --summarize check_x8.csv
 """
 
@@ -160,6 +161,8 @@ def main(argv=None):
     pairs = wcsi2._pairs_from_dirs(args.gt_dir, args.lr_dir, 0)[args.first:]
     if args.count:
         pairs = pairs[:args.count]
+    if not pairs:
+        ap.error("no (GT, LR) pairs selected: --first is an index into the sorted stems")
     variants = [v for v in args.variants.split(",") if v]
     metrics = [m for m in args.metrics.split(",") if m]
     unknown = set(metrics) - set(METRICS + OPTIONAL)
