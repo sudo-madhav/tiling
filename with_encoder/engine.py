@@ -36,6 +36,11 @@ def _grad_mag(fk):
     return np.sqrt(g)
 
 
+def _log_energy(fmap):
+    X = fs.tokens(fmap)
+    return float(np.log(np.mean(np.sum((X - X.mean(0)) ** 2, 1)) + 1e-12))
+
+
 def _gate_layer(keys):
     lat = [k for k in keys if k[0] == "latent"]
     return lat[0] if lat else min((k for k in keys if k[0] == "texture"), key=lambda k: k[2], default=None)
@@ -119,6 +124,9 @@ def tile_stats(stack, test, anchor, rect, s, bases, gate, p, gamma_pix=None):
         if role == "semantic":
             L["desc_t"], L["desc_a"] = ft.reshape(-1, B["k"]).mean(0), fa.reshape(-1, B["k"]).mean(0)
         else:
+            # log feature energy in the encoder's own channels: unlike the PCA coordinates it
+            # means the same thing in every image, so a natural model can be fitted across images
+            L["loge_t"], L["loge_a"] = _log_energy(et[role][name].data), _log_energy(ea[role][name].data)
             Qt, _ = fs.feature_nematic(ft, p["n_q"])
             Qa, _ = fs.feature_nematic(fa, p["n_q"])
             L["q"] = float(np.sum((Qt - Qa) ** 2)) / jq ** 2

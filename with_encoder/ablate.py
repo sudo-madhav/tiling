@@ -37,6 +37,7 @@ wcsi = fs.wcsi
 CATCH = ("F2_colour_drift", "F3_seam_step", "F4_texture_clash", "F5_oversmooth", "F7_tile_colour_jitter")
 PASS = "F1_texture_resample"
 ALLOMETRIC = "F6_coherent_sharpen"
+PIXEL_REF = tuple(T.PIX_REF) + ("gmci_lr", "gmci_seam", "gmci_master", "gmci_frust", "gmci_emerge")
 
 
 def _lum01(path):
@@ -117,13 +118,16 @@ def run(args):
                 t0 = time.time()
                 rec = dict(stem=r["stem"], kind=r["kind"], gate=gate, tag=args.tag, scale=r["scale"])
                 try:
+                    # pixel terms do not depend on the gate: computed with the first gate, then copied
                     ref = hybrid_ref(r["sr"], r["gt"], r["lr"], stack=stack, scale=r["scale"], tile=r["tile_lr"],
-                                     overlap=r["overlap_lr"], gate=gate, with_gmci=base is None)
+                                     overlap=r["overlap_lr"], gate=gate, with_wcsi2=base is None,
+                                     with_gmci=args.gmci and base is None, device=args.device)
                     if base is None:
-                        base = dict(pix={k: ref["energies"][k] for k in
-                                         ("pix_lr", "pix_seam", "pix_master", "pix_frust", "pix_emerge")},
+                        base = dict(pix={k: ref["energies"][k] for k in PIXEL_REF},
                                     noref=hybrid_noref(r["sr"], r["lr"], stack=stack, scale=r["scale"],
-                                                       tile_coords=r["tiles"]),
+                                                       tile_coords=r["tiles"], calib=args.calib,
+                                                       feat_calib=args.feat_calib, device=args.device,
+                                                       with_v1=args.v1),
                                     base=baselines(r["sr"], r["gt"], args.external_baselines))
                     ref["energies"].update(base["pix"])
                     rec.update(energies_ref=ref["energies"], rho_ref=ref["rho_feature"],
@@ -141,9 +145,9 @@ def _arm_values(rec):
     """{arm: energy-like value, lower is better} for one result row."""
     v = {}
     for name, c in T.score_all(rec["energies_ref"], "ref").items():
-        v[f"ref:{name}"] = c["F_norm"] if c["used"] else None
+        v[f"ref:{name}"] = c["F_norm"]
     for name, c in T.score_all(rec["energies_noref"], "noref").items():
-        v[f"noref:{name}"] = c["F_norm"] if c["used"] else None
+        v[f"noref:{name}"] = c["F_norm"]
     for k, x in rec["baselines"].items():
         v[f"base:{k}"] = x
     return v
@@ -231,6 +235,11 @@ def main(argv=None):
     r.add_argument("--results", required=True)
     r.add_argument("--shard")
     r.add_argument("--external-baselines", action="store_true")
+    r.add_argument("--gmci", action="store_true", help="also compute the legacy GMCI pixel terms (slow)")
+    r.add_argument("--v1", action="store_true", help="also compute the legacy WCSI v1 terms")
+    r.add_argument("--calib", default="auto", help="WCSI-2 pixel calibration ('auto' or a JSON)")
+    r.add_argument("--feat-calib", help="feature calibration JSON from `hybrid_noref.py calibrate`")
+    r.add_argument("--device", help="WCSI-2 kernels: numpy (default), cuda:k")
     s = sub.add_parser("summarize")
     s.add_argument("results", nargs="+")
     s.add_argument("--out", required=True)

@@ -6,4 +6,6 @@ cd "$ROOT"
 CFG="${GENET_ABLATION_CONFIG:-genet_ablation/config.json}"
 OUT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["out"])' "$CFG")"
 DATASET="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("dataset","div8k"))' "$CFG")"
-python3 genet_ablation/summarize.py --out "$OUT" --dataset "$DATASET"
+for metric in ${METRICS:-wcsi wcsi2 wcsi2_ref}; do
+    python3 genet_ablation/summarize.py --out "$OUT" --dataset "$DATASET" --metric "$metric" || true
+done

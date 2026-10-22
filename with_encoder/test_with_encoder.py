@@ -18,6 +18,7 @@ import terms as T  # noqa: E402
 from encoders import EncoderUnavailable, FeatureMap, build_encoder  # noqa: E402
 from encoders.gabor import GaborEncoder  # noqa: E402
 from encoders.registry import Stack, build_stack, conflicts  # noqa: E402
+import hybrid_noref as hybrid_noref_mod  # noqa: E402
 from hybrid_noref import hybrid_noref  # noqa: E402
 from hybrid_ref import hybrid_ref  # noqa: E402
 
@@ -133,7 +134,9 @@ def test_clone_scores_100(data):
     d = hybrid_ref(gt, gt, lr, scale=S, tile=16)
     assert d["score"] == pytest.approx(100.0)
     assert all(v is None or abs(v) < 1e-9 for v in d["energies"].values())
-    assert all(c["score"] == pytest.approx(100.0) for c in d["configs"].values())
+    assert all(c["score"] is None or c["score"] == pytest.approx(100.0) for c in d["configs"].values())
+    assert d["wcsi2_ref"] == pytest.approx(100.0)
+    assert d["energies"]["gmci_master"] is None and d["configs"]["C_pixel_gmci"]["score"] is None
 
 
 def test_gate_spares_resampled_texture(data):
@@ -177,7 +180,7 @@ def test_pixel_terms_catch_what_they_own(data):
     drift = hybrid_ref(C.corrupt("F2_colour_drift", gt, lr, S, rects), gt, lr, scale=S, tile=16)["energies"]
     seam = hybrid_ref(C.corrupt("F3_seam_step", gt, lr, S, rects), gt, lr, scale=S, tile=16)["energies"]
     # a +-3.5 b* ramp is a smaller CIEDE2000 difference, about 1 JND on average here
-    assert drift["pix_lr"] > 0.5
+    assert drift["pix_tone"] > 0.5
     assert seam["pix_seam"] > 0.1
 
 
@@ -219,18 +222,52 @@ def test_other_gates_run(data, gate):
 
 # ---------------------------------------------------------------- without reference
 
-def test_noref_consistency(data):
+@pytest.fixture(scope="module")
+def feat_calib(tmp_path_factory):
+    pairs = [(g, down(g)) for g in (scene(seed=k) for k in (11, 12, 13))]
+    out = tmp_path_factory.mktemp("fc") / "feat_x4_t16.json"
+    return hybrid_noref_mod.calibrate(pairs, "gabor", S, tile=16, out=out, note="synthetic scenes"), out
+
+
+def test_noref_uncalibrated_consistency(data):
     gt, lr, up, hf = data
-    n_gt = hybrid_noref(gt, lr, scale=S, tile=16)
-    n_clash = hybrid_noref(within_material_clash(up, hf), lr, scale=S, tile=16)
-    n_bic = hybrid_noref(up, lr, scale=S, tile=16)
-    assert n_clash["energies"]["nr_feat_sheaf"] > 5 * n_gt["energies"]["nr_feat_sheaf"]
+    n_gt = hybrid_noref(gt, lr, scale=S, tile=16, calib=None, return_details=True)
+    n_clash = hybrid_noref(within_material_clash(up, hf), lr, scale=S, tile=16, calib=None)
+    n_bic = hybrid_noref(up, lr, scale=S, tile=16, calib=None)
+    assert n_clash["energies"]["nr_feat_consist"] > n_gt["energies"]["nr_feat_consist"] + 1
     # without the anchor kernel, the bar tiles (more SR gain than plain stripes) read as frustration
-    loose = hybrid_noref(gt, lr, scale=S, tile=16, tau_anchor=1e9)
-    assert loose["energies"]["nr_feat_sheaf"] > 2 * n_gt["energies"]["nr_feat_sheaf"]
-    # doing nothing is perfectly consistent: this term measures consistency, not quality
-    assert n_bic["energies"]["nr_feat_sheaf"] == pytest.approx(0.0, abs=1e-9)
-    assert n_gt["energies"]["nr_cyto_dino"] is not None
+    loose = hybrid_noref(gt, lr, scale=S, tile=16, calib=None, tau_anchor=1e9, return_details=True)
+    raw = lambda d: np.mean([t["frust"] for t in d["tiles"]])  # noqa: E731
+    assert raw(loose) > 1.5 * raw(n_gt)
+    # uncalibrated, doing nothing is perfectly consistent and the detail term is not computed
+    assert n_bic["energies"]["nr_feat_consist"] == pytest.approx(0.0, abs=1e-9)
+    assert n_bic["energies"]["nr_feat_detail"] is None
+    assert any("uncalibrated" in n for n in n_gt["notes"])
+    assert n_gt["energies"]["wcsi_cyto"] is None
+
+
+def test_noref_calibrated_puts_ground_truth_first(data, feat_calib):
+    gt, lr, up, hf = data
+    cal, path = feat_calib
+    assert cal["n_images"] == 3 and all(v["sigma2"] > 0 and v["nu_pair"] > 0 for v in cal["layers"].values())
+    kw = dict(scale=S, tile=16, calib=None, feat_calib=str(path))
+    n_gt, n_bic = hybrid_noref(gt, lr, **kw), hybrid_noref(up, lr, **kw)
+    n_clash = hybrid_noref(within_material_clash(up, hf), lr, **kw)
+    # missing detail now costs (it scored 0 before calibration), tile-wise clash still costs most
+    assert n_bic["energies"]["nr_feat_detail"] > n_gt["energies"]["nr_feat_detail"] + 0.3
+    assert n_clash["energies"]["nr_feat_consist"] > n_gt["energies"]["nr_feat_consist"] + 1
+    assert n_gt["configs"]["N2_feature"]["score"] > n_bic["configs"]["N2_feature"]["score"]
+    assert n_gt["configs"]["N2_feature"]["score"] > n_clash["configs"]["N2_feature"]["score"]
+    assert n_gt["score"] > n_bic["score"]
+    with pytest.raises(ValueError):
+        hybrid_noref(gt, lr, scale=S, tile=16, calib=None, feat_calib={**cal, "scale": 8})
+
+
+def test_noref_legacy_v1_terms(data):
+    gt, lr, _, _ = data
+    d = hybrid_noref(gt, lr, scale=S, tile=16, calib=None, with_v1=True)
+    assert d["wcsi"] is not None and d["energies"]["wcsi_cyto_dino"] is not None
+    assert d["configs"]["N0_wcsi"]["score"] is not None
 
 
 # ---------------------------------------------------------------- terms and corruptions
@@ -242,6 +279,7 @@ def test_combine_skips_missing():
     assert T.combine(E, ["a"], kind="noref")["score"] == pytest.approx(100 / 3)
     for name, ts in {**T.CONFIGS_REF, **T.CONFIGS_NOREF}.items():
         assert all(t in T.TERMS for t in ts), name
+    assert T.combine(dict(a=None), ["a"])["score"] is None
 
 
 def test_lab_roundtrip():
