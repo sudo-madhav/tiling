@@ -229,6 +229,21 @@ the ground truth, on 4–10 % of images, where the change stays within the natur
 tile-gain, clash and seam variants tie at most. With reference, the ground truth wins on every image against every variant, and the
 resampled texture is the closest (88–89), as intended for valid generative texture.
 
+**GMCI against WCSI-2 with reference** (8×, DIV2K 0851–0853, tile 256 HR px; `natural_check.py
+--metrics wcsi2_ref,gmci`):
+
+| variant | WCSI-2 ref | GMCI |
+|---|---|---|
+| gt | 100.0 | 100.0 |
+| resample | **85.8** | 0.0 |
+| sharpen | **67.4** | 0.0 |
+| tile_gain | **56.7** | 0.0 |
+| bicubic | **14.0** | 0.0 |
+
+GMCI's `100 exp(−F)` saturates at 0 for anything that is not the ground truth, a valid texture
+resample included, so it cannot rank outputs. WCSI-2 orders them as intended. Time per score
+on these 3 MP images: GMCI 12.8 s, WCSI-2 ref 2.9 s.
+
 ## 5. Speed and GPUs
 
 Measured on 3 MP DIV2K images, one CPU process (numpy): about 1.1 s without and 3.4 s with
