@@ -1,7 +1,8 @@
-# Frozen encoders for WCSI and GMCI: decisions
+# Frozen encoders for WCSI-2: decisions
 
-WCSI (`genet/`, no reference) and GMCI (`with_ref_genet/`, with ground truth) work in
-pixels. This directory adds frozen, off-the-shelf encoders where they buy something,
+WCSI-2 (`genet/wcsi2.py`, without and with the ground truth) works in pixels. It replaced
+WCSI v1 and GMCI as the pixel side of this directory (D14); the decisions below that mention
+GMCI were made against it and still hold for the feature side. This directory adds frozen, off-the-shelf encoders where they buy something,
 keeps pixels where encoders are blind, and makes every choice an ablation arm. Nothing is
 trained and nothing is downloaded.
 
@@ -36,7 +37,7 @@ Pixels keep three bands no frozen encoder sees reliably: block-mean colour again
 ## Decisions
 
 **D1. Keep pixel terms for the ultra-low band, 1-px seams and the Nyquist octave.**
-`pix_lr` (GMCI E_lr) / `nr_rg` (WCSI E_RG) for colour after D_s block averaging,
+`pix_tone` (WCSI-2 E_tone) / `nr_low` (WCSI-2 E_low) for colour after D_s coarse-graining,
 `pix_seam` / `nr_seam` for seam steps, `pix_nyq` / `nr_nyq` for the top octave. The Nyquist
 probe is one-sided: it counts excess top-octave energy and aliasing peaks (ringing,
 checkerboards), not missing high frequencies. Blur belongs to the mid-band feature terms.
@@ -53,8 +54,8 @@ The proposal's three reasons for keeping pixels, corrected:
 
 **D2. Partitioned hybrid by default, union as an arm.** `F_hybrid` (with reference) uses
 pixel terms only for the three bands above, and features for the mid band and the non-local
-structure. `F_union` adds every GMCI pixel term too. If the union is not better, the
-partition loses nothing.
+structure. `F_union` adds every WCSI-2 reference pixel term too. If the union is not better,
+the partition loses nothing.
 
 **D3. Gate = pixel phase-congruency rigidity of the ground truth, pooled to each feature
 grid.** The proposal's gate (sigmoid of z-scored latent gradient + CLS attention) is kept
@@ -97,9 +98,9 @@ legitimately gain more from SR than plain stripe tiles. With the semantic graph 
 the ground truth scored 19 JND, against 48 for a real within-material clash. With the
 anchor kernel it scores 4.2 against 50. `tau_anchor` was set on that one synthetic scene
 and is swept in ABLATION.md.
-**Limitation: the no-reference feature sheaf measures consistency, not quality.** Bicubic
-scores exactly 0 (no upgrade is a perfectly consistent upgrade). Report it next to a quality
-measure; WCSI's own E_RG already plays that role partly.
+This limitation, the no-reference feature sheaf measuring consistency and not quality
+(bicubic scored exactly 0: no upgrade is a perfectly consistent upgrade), is the same flaw that
+made WCSI v1 rank generative outputs above the ground truth. D15 fixes it.
 
 **D8. Default encoders.** Texture: VGG-19 `relu2_2, relu3_4, relu4_4` (strides 2, 4, 8). It
 is the Gatys texture network and the backbone family of LPIPS/DISTS, so the comparison with
@@ -140,35 +141,65 @@ opponent colour, no files) is both the CPU test double and an ablation arm. If a
 encoder does not beat it, the gain came from multi-scale filtering and distributional
 comparison, not from what the network learned.
 
+**D14. Pixel terms come from WCSI-2.** WCSI v1 penalised natural variation between tiles,
+rewarded blur and had no term for missing detail, so natural ground truth scored about 20 against
+25 for CASR on DIV8K. GMCI inherited the zero-difference targets and took 5–6 minutes per
+33 MP image on CPU. WCSI-2 (see `genet/WCSI2.md`) describes each tile's invented band by one
+vector, compares it with a calibrated natural target (no reference) or the ground-truth tile
+(reference), subtracts natural spreads and floors, and runs batched on numpy or a GPU. The
+v1 / GMCI terms remain as `wcsi_*` / `gmci_*` arms (`with_v1`, `with_gmci`, both off by default).
+The reference gate (D3) now uses WCSI-2's batched phase-congruency kernel with 16 px of context.
+
+**D15. The no-reference feature terms are calibrated on ground-truth / LR pairs.** Two terms
+replace `nr_feat_sheaf`:
+- `nr_feat_detail`: per tile and sheaf layer, the log feature energy of the SR tile against
+  a + b × that of its bicubic anchor, in units of the natural residual spread plus a JND
+  (`2 log(1 + jnd_feat)`); the excess of the mean squared residual over one. The energy is
+  taken in the encoder's own channels, not in the per-image PCA basis, so one linear model
+  per layer holds across images. Missing detail (bicubic) now costs.
+- `nr_feat_consist`: the sheaf residuals of D5–D7, per layer divided by the level the ground
+  truth itself reaches (`nu_pair`), minus one, averaged over edges, clipped at zero. Natural
+  disagreement between tiles is free; only the excess counts.
+The aliasing-peak floor of `nr_nyq` is the 95th percentile of ground-truth tiles.
+`hybrid_noref.py calibrate` fits all three per encoder stack, scale and analysis tile
+(`sh/calibrate_noref.sh`, on a split that is not scored). Without a calibration file
+`nr_feat_detail` is not computed and the output says so. On the synthetic scene of the tests,
+the calibrated feature arm (`N2_feature`) scores ground truth 100, uniform sharpening 90,
+bicubic 79, within-material clash 15.
+
 ## Term map
 
 | term | setting | space | band | encoder | replaces / adds |
 |---|---|---|---|---|---|
-| `pix_lr` / `nr_rg` | ref / noref | pixel | ultra-low (D_s, CIELAB) | — | kept from GMCI / WCSI |
-| `pix_seam` / `nr_seam` | ref / noref | pixel | 1-px seam | — | kept |
+| `pix_tone` / `nr_low` | ref / noref | pixel | ultra-low (D_s, CIELAB) | — | WCSI-2 |
+| `pix_seam` / `nr_seam` | ref / noref | pixel | 1-px seam | — | WCSI-2 |
+| `pix_colour`, `pix_struct`, `pix_detail`, `pix_consist` | ref | pixel | colour distribution, phase-locked structure, invented band | — | WCSI-2 reference terms (`F_union`, `C_pixel_wcsi2`) |
+| `nr_detail`, `nr_consist` | noref | pixel | invented band | — | WCSI-2 (`N0_wcsi2`, `N3_hybrid`) |
 | `pix_nyq` / `nr_nyq` | ref / noref | pixel | Nyquist octave | — | new one-sided probe (excess energy + aliasing peaks) |
 | `feat_wadd` | ref | feature | mid (2×–8×) | VGG-19 | adds to GMCI E_wadd: gated pointwise + per-tile Bures–Wasserstein |
 | `lat_wadd` | ref | latent | mid (8×) | VAE | same on the latent; dropped on conflict |
 | `feat_pcp` | ref | feature | mid | VGG-19 | feature nematic tensor + feature spectrum W1 (band above LR Nyquist on that grid) |
 | `feat_sem` | ref | semantic | 14 px tokens | DINOv2 | new: hallucinated / changed content |
 | `feat_frust` | ref | feature | non-local | VGG-19 + DINOv2 graph | feature version of GMCI E_frust, plus `rho_feature` |
-| `nr_cyto_dino` | noref | pixel | non-local | DINOv2 graph | WCSI E_cyto with the graph swapped |
-| `nr_feat_sheaf` | noref | feature | non-local | VGG-19 + DINOv2 graph | new: upgrade consistency, plus `rho_feature` |
+| `wcsi_cyto_dino` | noref | pixel | non-local | DINOv2 graph | legacy: WCSI v1 E_cyto with the graph swapped |
+| `nr_feat_detail` | noref | feature | mid | VGG-19 | new (D15): feature energy against the calibrated natural upgrade |
+| `nr_feat_consist` | noref | feature | non-local | VGG-19 + DINOv2 graph | upgrade consistency beyond the natural level (D15), plus `rho_feature` |
 | `feat_point` | ref | feature | mid | VGG-19 | baseline only: ungated pointwise (an LPIPS analogue) |
 
-Configurations (arms) are in `terms.py`: `B_pointwise_feature`, `C_pixel_morphogen` (= GMCI),
-`D_feature_latent`, `E_feature_sheaf`, `F_hybrid` (default), `F_union`, and leave-one-out
-arms `F_minus_*`. Without a reference: `N0_wcsi`, `N1_wcsi_dino_graph`, `N2_feature_sheaf`,
-`N3_hybrid` (default), `N4_union`.
+Configurations (arms) are in `terms.py`: `B_pointwise_feature`, `C_pixel_wcsi2` (= WCSI-2 with
+reference), `C_pixel_gmci` (legacy), `D_feature_latent`, `E_feature_sheaf`, `F_hybrid` (default),
+`F_union`, and leave-one-out arms `F_minus_*`. Without a reference: `N0_wcsi2` (= WCSI-2),
+`N2_feature`, `N3_hybrid` (default), `N4_union`, and the legacy `N0_wcsi`, `N1_wcsi_dino_graph`.
 
 ## What we did not adopt from the proposal, and why
 
 - **"Milliseconds per image."** No. For a 33 MP image (8× of a ~0.5 MP LR) with 512 px tiles
   there are about 127 tiles, each encoded about 2.1 times (SR, anchor, plus the basis
   sample). DINOv2-L at 512² is roughly 0.4 TFLOP and VGG-19 to relu4_4 roughly 0.1 TFLOP,
-  so the encoders take on the order of seconds per image per A100 in fp16. The CPU pixel
-  terms (GMCI) dominate wall time. Budget minutes per image across the arms, not
-  milliseconds.
+  so the encoders take on the order of seconds per image per A100 in fp16. The WCSI-2 pixel
+  terms take about 11 s (no reference) and 35 s (reference) per 33 MP image on one CPU
+  process, less with `device="cuda:k"`; GMCI took 5–6 minutes. Budget tens of seconds per
+  image across the arms, not milliseconds.
 - **Procrustes on token matrices and position-wise token residuals** (D5).
 - **Latent-gradient + CLS-attention gate as the default** (D3).
 - **"Universally applicable to medical / satellite."** DINOv2 and VGG are trained on natural
@@ -195,9 +226,8 @@ skipped with a note above `rho_max_n` = 6000; at 512 px tiles on 33 MP with thre
 
 ## Open items
 
-- GMCI on the synthetic scene: E_seam reads about 8 JND for uniform above-Nyquist sharpening,
-  and E_master is very large for a valid resample of near-Nyquist stripes. Check both on
-  DIV8K before relying on `C_pixel_morphogen` or `F_union`.
+- The feature natural model (D15) is fitted per encoder stack; check on the held-out split
+  that the calibrated `N3_hybrid` ranks the ground truth first, as WCSI-2 does in pixels.
 - `tau_anchor`, `tau_sem` and `jnd_feat` are nominal (set on synthetic scenes); sweep them.
 - The VOSR, SeedVR and CASR conflict entries need checking against the checkpoints actually
   run.

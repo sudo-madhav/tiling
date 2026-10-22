@@ -78,8 +78,9 @@ def score(args):
             img = score_sweep._bicubic(lr, s) if sr is None else str(sr)
             fam = conflicts(enc_cfg, method) if enc_cfg else set()
             ref = hybrid_ref(img, str(gt), str(lr), stack=stack, scale=s, tile=tile, method_families=fam,
-                             gate=args.gate, return_details=True)
-            nr = hybrid_noref(img, str(lr), stack=stack, scale=s, tile=tile, return_details=True)
+                             gate=args.gate, device=args.device, return_details=True)
+            nr = hybrid_noref(img, str(lr), stack=stack, scale=s, tile=tile, calib=args.calib,
+                              feat_calib=args.feat_calib, device=args.device, return_details=True)
             rec.update(ref=ref, noref=nr, encoder_conflict=ref["encoder_conflict"])
         except Exception as e:
             rec.update(error=f"{type(e).__name__}: {e}", trace=traceback.format_exc(limit=3))
@@ -103,14 +104,15 @@ def summarize(args):
             for name in (T.CONFIGS_REF if side == "ref" else T.CONFIGS_NOREF):
                 cs = [r[key]["configs"][name] for r in recs]
                 if args.quantity == "score":
-                    row[f"{side}:{name}"] = float(np.mean([c["score"] for c in cs]))
+                    sc = [c["score"] for c in cs if c["score"] is not None]
+                    row[f"{side}:{name}"] = float(np.mean(sc)) if sc else None
                 else:
                     e = [c["F_norm"] for c in cs if c.get("F_norm") is not None]
                     row[f"{side}:{name}"] = float(np.median(e)) if e else None
             rho = [r[key]["rho_feature"] for r in recs if r[key]["rho_feature"] is not None]
             row[f"{side}:rho_feature"] = float(np.median(rho)) if rho else None
         rows.append(row)
-    cols = [c for c in rows[0] if c not in ("method", "n")] if rows else []
+    cols = [c for c in rows[0] if c not in ("method", "n") and any(r[c] is not None for r in rows)] if rows else []
     what = ("mean score (higher is better)" if args.quantity == "score"
             else "median energy in JND (lower is better; does not saturate)")
     lines = [f"Cells: {what}; rho_feature is the median.", "",
@@ -135,6 +137,9 @@ def main(argv=None):
     ap.add_argument("--methods", default="bicubic,vosr,casr,seedvr")
     ap.add_argument("--targets", default="sr,gt")
     ap.add_argument("--gate", default="pix", choices=("pix", "feat", "none", "all"))
+    ap.add_argument("--calib", default="auto", help="WCSI-2 pixel calibration ('auto' or a JSON)")
+    ap.add_argument("--feat-calib", help="feature calibration JSON from `hybrid_noref.py calibrate`")
+    ap.add_argument("--device", help="WCSI-2 kernels: numpy (default), cuda:k")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--shard")
     ap.add_argument("--retry-errors", action="store_true")
