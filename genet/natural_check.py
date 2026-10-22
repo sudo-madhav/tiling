@@ -3,7 +3,8 @@
 
 Builds, for every (GT, LR) pair, the ground truth and controlled stand-ins for SR outputs on
 the analysis grid, and scores each with WCSI (v1), WCSI-2 without reference and WCSI-2 with
-reference. Nothing is downloaded or trained; the stand-ins are:
+reference (and, with --metrics ...,gmci, the legacy GMCI of with_ref_genet/). Nothing is
+downloaded or trained; the stand-ins are:
 
   gt              the ground truth
   bicubic         bicubic of the LR: no invented detail
@@ -32,12 +33,14 @@ import numpy as np
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent / "with_encoder"))
+sys.path.insert(0, str(_HERE.parent / "with_ref_genet"))
 import wcsi  # noqa: E402
 import wcsi2  # noqa: E402
 
 VARIANTS = ("gt", "bicubic", "bicubic_usm", "resample", "phase_random", "tile_gain", "clash", "sharpen",
             "colour_jitter", "seam")
 METRICS = ("wcsi", "wcsi2", "wcsi2_ref")
+OPTIONAL = ("gmci",)
 
 
 def _variant(kind, gt01, lr01, s, rects, seed):
@@ -95,6 +98,11 @@ def _job(args):
                 d = wcsi2.wcsi2_score(img, lr01, scale=s, tile=tile, calib=calib, return_details=True)
                 row[m] = d["wcsi2"]
                 row.update({f"{m}:{t}": v for t, v in d["terms"].items()})
+            elif m == "gmci":
+                import gmci
+                d = gmci.gmci_score(img, gt01, lr01, scale=s, tile=tile, return_details=True)
+                row[m] = d["gmci"]
+                row[f"{m}:rho"] = d["rho_coherence"]
             else:
                 d = wcsi2.wcsi2_ref_score(img, gt01, lr01, scale=s, tile=tile, return_details=True)
                 row[m] = d["wcsi2_ref"]
@@ -107,12 +115,12 @@ def _job(args):
 
 def summarize(path):
     rows = list(csv.DictReader(open(path)))
-    metrics = [m for m in METRICS if m in rows[0]]
+    metrics = [m for m in METRICS + OPTIONAL if m in rows[0]]
     by = {}
     for r in rows:
         by.setdefault(r["variant"], {}).setdefault(r["image"], r)
     imgs = sorted(by["gt"])
-    out = ["| variant | " + " | ".join(f"{m} mean | GT wins" for m in metrics) + " |",
+    out = ["| variant | " + " | ".join(f"{m} mean | GT wins / ties" for m in metrics) + " |",
            "|---|" + "---|---|" * len(metrics)]
     for v in VARIANTS:
         if v not in by:
@@ -120,9 +128,12 @@ def summarize(path):
         cells = []
         for m in metrics:
             vals = [float(by[v][i][m]) for i in imgs if i in by[v]]
-            wins = [float(by["gt"][i][m]) > float(by[v][i][m]) for i in imgs if i in by[v]]
-            cells += [f"{np.mean(vals):.1f}", "-" if v == "gt" else f"{100 * np.mean(wins):.0f}%"]
+            diff = np.array([float(by["gt"][i][m]) - float(by[v][i][m]) for i in imgs if i in by[v]])
+            cells += [f"{np.mean(vals):.1f}",
+                      "-" if v == "gt" else f"{100 * np.mean(diff > 0.05):.0f}% / {100 * np.mean(np.abs(diff) <= 0.05):.0f}%"]
         out.append(f"| {v} | " + " | ".join(cells) + " |")
+    secs = [f"{m} {np.mean([float(r[m + ':sec']) for r in rows]):.1f} s" for m in metrics if m + ":sec" in rows[0]]
+    out.append(f"\n{len(imgs)} images; mean seconds per score: " + ", ".join(secs))
     text = "\n".join(out)
     print(text)
     return text
@@ -151,6 +162,9 @@ def main(argv=None):
         pairs = pairs[:args.count]
     variants = [v for v in args.variants.split(",") if v]
     metrics = [m for m in args.metrics.split(",") if m]
+    unknown = set(metrics) - set(METRICS + OPTIONAL)
+    if unknown:
+        ap.error(f"unknown metrics {sorted(unknown)}")
     calib = None if args.calib == "none" else args.calib
     jobs = [(str(g), str(lo), args.scale, args.tile_sr, variants, metrics, calib) for g, lo in pairs]
     rows = []
